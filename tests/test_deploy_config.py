@@ -214,6 +214,9 @@ def test_bootstrap_wif_is_repository_scoped_and_does_not_deploy():
     assert "cloudscheduler.jobs.delete" in script
     assert "service-${PROJECT_NUMBER}@gcp-sa-cloudscheduler.iam.gserviceaccount.com" in script
     assert "--service=cloudscheduler.googleapis.com" in script
+    assert 'member="serviceAccount:${SCHEDULER_AGENT}"' in script
+    assert "Scheduled runs need that binding" in script
+    assert "iam.serviceAccounts.getIamPolicy" in script
     assert "attribute.repository_owner/" not in script
     assert 'POOL="github-visionlink"' in script
     assert 'PROVIDER="github"' in script

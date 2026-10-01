@@ -8,6 +8,12 @@
 #
 # Runtime identity stays visionlink-history-runner. GitHub impersonates
 # github-visionlink-deployer only.
+#
+# Scheduled runs need the Cloud Scheduler service agent to have
+# roles/iam.serviceAccountUser on github-visionlink-deployer. This script
+# grants that binding. The GitHub deployer cannot: it lacks
+# iam.serviceAccounts.getIamPolicy. Run this script from an admin session
+# before the first weekday snapshot.
 
 set -euo pipefail
 
@@ -212,9 +218,10 @@ PRINCIPAL="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/location
   --role="roles/iam.serviceAccountUser" \
   --quiet >/dev/null
 
-# Cloud Scheduler mints an OAuth token for the deployer when the weekday job
-# runs. The deployer already has run.jobs.runWithOverrides. This binding does
-# not create or run a scheduler job.
+# Cloud Scheduler mints an OAuth token as the deployer when the weekday job
+# fires. The deployer already has run.jobs.runWithOverrides. This binding is
+# required for that token. add-iam-policy-binding is idempotent. It does not
+# create or run a scheduler job. GitHub Actions cannot apply it.
 SCHEDULER_AGENT="service-${PROJECT_NUMBER}@gcp-sa-cloudscheduler.iam.gserviceaccount.com"
 if ! "${GCLOUD}" iam service-accounts describe "${SCHEDULER_AGENT}" --project="${PROJECT}" >/dev/null 2>&1; then
   "${GCLOUD}" beta services identity create \
@@ -349,6 +356,8 @@ PROVIDER_RESOURCE="projects/${PROJECT_NUMBER}/locations/global/workloadIdentityP
 echo
 echo "Workload Identity is configured. No Cloud Run job was deployed or executed."
 echo "No Cloud Scheduler job was created. The deploy workflow ensures notion-visionlink-history-weekday-10am."
+echo "Granted ${SCHEDULER_AGENT} roles/iam.serviceAccountUser on ${DEPLOYER}."
+echo "Scheduled runs need that binding to call the Cloud Run API. GitHub Actions cannot set it."
 echo
 echo "GCP_WORKLOAD_IDENTITY_PROVIDER=${PROVIDER_RESOURCE}"
 echo "GCP_SERVICE_ACCOUNT=${DEPLOYER}"

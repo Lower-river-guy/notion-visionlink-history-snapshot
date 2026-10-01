@@ -162,6 +162,11 @@ def test_ensure_script_does_not_execute_and_uses_the_override():
     assert "gcloud run jobs" not in script
     assert "--set-env-vars" not in script
     assert "--update-env-vars" not in script
+    assert "add-iam-policy-binding" not in script
+    assert "get-iam-policy" not in script
+    assert "iam.serviceAccounts.getIamPolicy" in script
+    assert "deploy/bootstrap-gcp-auth.sh" in script
+    assert "scheduler-service-agent-actas" not in script
     assert "bash deploy/ensure_weekday_scheduler.sh" in workflow
     assert "gcloud scheduler" not in diagnostic
     assert "workflow_dispatch:" in diagnostic

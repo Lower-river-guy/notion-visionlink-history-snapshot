@@ -30,17 +30,10 @@ fi
 
 echo "Ensuring Cloud Scheduler ${SCHEDULER_NAME} in ${REGION}."
 echo "Resting Cloud Run job ${CLOUD_RUN_JOB} is not modified and is not executed."
-
-BINDING_OK=true
-if ! gcloud iam service-accounts add-iam-policy-binding "${OAUTH_SERVICE_ACCOUNT}" \
-  --project="${PROJECT}" \
-  --member="serviceAccount:${SCHEDULER_AGENT}" \
-  --role="roles/iam.serviceAccountUser" \
-  --quiet >/dev/null; then
-  BINDING_OK=false
-  echo "WARNING: Could not grant ${SCHEDULER_AGENT} iam.serviceAccountUser on ${OAUTH_SERVICE_ACCOUNT}." >&2
-  echo "WARNING: Run deploy/bootstrap-gcp-auth.sh from an admin gcloud session, then rerun this script." >&2
-fi
+echo "Scheduled runs call the Run API as ${OAUTH_SERVICE_ACCOUNT}."
+echo "That requires ${SCHEDULER_AGENT} to have roles/iam.serviceAccountUser on ${OAUTH_SERVICE_ACCOUNT}."
+echo "This step does not grant or read that binding. The deployer lacks iam.serviceAccounts.getIamPolicy."
+echo "An admin applies it with deploy/bootstrap-gcp-auth.sh."
 
 mkdir -p "${TMP}/lists"
 while IFS= read -r location; do
@@ -126,9 +119,4 @@ gcloud scheduler jobs describe "${SCHEDULER_NAME}" \
   | python3 deploy/weekday_scheduler.py
 
 echo "Did not execute the Cloud Run job. Did not trigger the scheduler."
-
-if [[ "${BINDING_OK}" != "true" ]]; then
-  echo "confirmed: scheduler-service-agent-actas=false"
-  exit 1
-fi
-echo "confirmed: scheduler-service-agent-actas=true"
+echo "Did not change IAM. Scheduler service-agent actAs is applied only by deploy/bootstrap-gcp-auth.sh."
