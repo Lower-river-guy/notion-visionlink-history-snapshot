@@ -1,0 +1,115 @@
+# Tests on every push and pull request.
+#
+# A push to main or cursor/visionlink-history-snapshot-3dab also submits
+# cloudbuild.yaml when GitHub Actions workload-identity secrets exist. That
+# build updates Cloud Run job notion-visionlink-history-snapshot and keeps:
+#
+#   NOTION_TOKEN=Notion_Google_Cloud_Sync:latest
+#   DRY_RUN=true
+#   runner visionlink-history-runner@work-projects-486912.iam.gserviceaccount.com
+#
+# It does not set DRY_RUN=false, does not execute a production snapshot, and
+# does not create Cloud Scheduler. Merging to main does not enable writes.
+#
+# One-time connection, only if no trigger and no workload-identity secrets
+# exist yet. Pushing this workflow cannot create either one when this
+# repository token cannot administer GitHub secrets or Google Cloud.
+#
+# 1. In Google Cloud Console, connect Lower-river-guy/notion-visionlink-history-snapshot
+#    to Cloud Build once (Cloud Build GitHub App). That authorization click
+#    is not available from git push.
+# 2. Grant only the Cloud Build service account that already works in
+#    work-projects-486912. Domain: @cloudbuild.gserviceaccount.com.
+#    Do not use @cloudservices.gserviceaccount.com.
+#
+#    PROJECT=work-projects-486912
+#    PROJECT_NUMBER="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')"
+#    BUILD_SA="${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
+#    RUNNER="visionlink-history-runner@${PROJECT}.iam.gserviceaccount.com"
+#    gcloud projects add-iam-policy-binding "$PROJECT" \
+#      --member="serviceAccount:${BUILD_SA}" --role="roles/run.developer"
+#    gcloud projects add-iam-policy-binding "$PROJECT" \
+#      --member="serviceAccount:${BUILD_SA}" --role="roles/artifactregistry.writer"
+#    gcloud iam service-accounts add-iam-policy-binding "$RUNNER" \
+#      --project="$PROJECT" --member="serviceAccount:${BUILD_SA}" \
+#      --role="roles/iam.serviceAccountUser"
+#
+# 3. After the GitHub App is connected, create the trigger once:
+#
+#    gcloud builds triggers create github \
+#      --project=work-projects-486912 \
+#      --name=notion-visionlink-history-snapshot-dry-run \
+#      --repo-owner=Lower-river-guy \
+#      --repo-name=notion-visionlink-history-snapshot \
+#      --branch-pattern='^(main|cursor/visionlink-history-snapshot-3dab)$' \
+#      --build-config=cloudbuild.yaml
+#
+#    Do not add a substitution that changes _DRY_RUN.
+#
+# Alternative to the trigger: store these GitHub Actions secrets (not the
+# Notion token) and this workflow submits the same cloudbuild.yaml:
+#
+#   GCP_WORKLOAD_IDENTITY_PROVIDER
+#   GCP_SERVICE_ACCOUNT
+#
+# The Cloud Build service account above is the identity that should deploy.
+# Do not grant the runner Owner or Editor.
+
+name: dry-run deploy
+
+on:
+  push:
+    branches:
+      - cursor/visionlink-history-snapshot-3dab
+      - main
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Run tests
+        run: python -m pytest
+
+  deploy:
+    needs: test
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/cursor/visionlink-history-snapshot-3dab' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check deploy credentials
+        id: creds
+        env:
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${GCP_WORKLOAD_IDENTITY_PROVIDER}" && -n "${GCP_SERVICE_ACCOUNT}" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "Cloud Build was not submitted from GitHub Actions."
+            echo "GCP_WORKLOAD_IDENTITY_PROVIDER or GCP_SERVICE_ACCOUNT is unset."
+            echo "One-time Cloud Build trigger setup is in this workflow file."
+          fi
+      - name: Authenticate to Google Cloud
+        if: steps.creds.outputs.available == 'true'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+      - name: Set up gcloud
+        if: steps.creds.outputs.available == 'true'
+        uses: google-github-actions/setup-gcloud@v2
+      - name: Submit dry-run Cloud Build
+        if: steps.creds.outputs.available == 'true'
+        run: gcloud builds submit --config cloudbuild.yaml --project work-projects-486912

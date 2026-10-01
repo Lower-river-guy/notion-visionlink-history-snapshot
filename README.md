@@ -118,20 +118,44 @@ Scheduler.
 deploy/deploy-dry-run.sh
 ```
 
-The Notion integration token must already exist in Secret Manager as
-`NOTION_TOKEN`. The script refuses to create a replacement and never prints
-the secret value. The token is mounted into the job as an environment
-variable. It is not stored in source, the Dockerfile, logs, or git.
+The application reads the environment variable `NOTION_TOKEN`. The token
+already lives in Secret Manager as `Notion_Google_Cloud_Sync`. Cloud Run
+mounts that secret with:
 
-Runtime service account `notion-visionlink-history-runner` receives only:
+`NOTION_TOKEN=Notion_Google_Cloud_Sync:latest`
 
-- `roles/secretmanager.secretAccessor` on secret `NOTION_TOKEN`
+The script refuses to create a replacement secret and never prints the secret
+value. The token is not stored in source, the Dockerfile, logs, or git.
+
+Runtime service account
+`visionlink-history-runner@work-projects-486912.iam.gserviceaccount.com`
+must already exist. The script does not create a service account. It receives
+only:
+
+- `roles/secretmanager.secretAccessor` on secret `Notion_Google_Cloud_Sync`
 - `roles/logging.logWriter` on the project
 - `roles/run.invoker` on this Cloud Run job
 
-The deploying principal and the Cloud Build service account receive
+The deploying principal and
+`${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com` receive
 `roles/iam.serviceAccountUser` on that runner so they can deploy the job as
-it. The runner is not granted Owner or Editor.
+it. That Cloud Build service account also receives `roles/run.developer` and
+`roles/artifactregistry.writer` so a later build can update this job. The
+runner is not granted Owner or Editor.
+
+## Continuous deploy
+
+Pushes run the test suite. When GitHub Actions has Google Cloud
+workload-identity secrets, or a Cloud Build trigger is connected,
+`.github/workflows/deploy-dry-run.yml` submits `cloudbuild.yaml`. That build
+updates this Cloud Run job and keeps `DRY_RUN=true` and
+`NOTION_TOKEN=Notion_Google_Cloud_Sync:latest`. It does not execute a
+production snapshot and does not create Cloud Scheduler. Merging to `main`
+does not enable writes.
+
+The one-time Cloud Build GitHub connection is documented in
+`.github/workflows/deploy-dry-run.yml`. Later revisions do not need a manual
+Cloud Shell deploy.
 
 `DESTINATION_DATABASE_ID` is `0357c6bd-2650-4dfc-affb-72430beaca84`, the
 history database found via the Notion API. Every run still checks that its
@@ -141,7 +165,7 @@ title is exactly `Cat VisionLink History`.
 
 | Variable | Purpose |
 | --- | --- |
-| `NOTION_TOKEN` | Notion integration secret. Required. Never log it. |
+| `NOTION_TOKEN` | Notion integration secret. Required. Cloud Run maps it from Secret Manager `Notion_Google_Cloud_Sync`. Never log it. |
 | `DRY_RUN` | `true` proposes pages and writes nothing. Default `false`. |
 | `SOURCE_DATABASE_ID` | Source database. Default is Cat VisionLink. |
 | `DESTINATION_DATABASE_TITLE` | Exact history title. Default `Cat VisionLink History`. |
@@ -179,5 +203,8 @@ src/snapshot.py        mapping, run id, dry run
 src/models.py          result and mapping records
 tests/                 unit tests
 deploy/deploy-dry-run.sh
+deploy/assert_job_config.py
+cloudbuild.yaml
+.github/workflows/deploy-dry-run.yml
 Dockerfile             Python 3.12
 ```

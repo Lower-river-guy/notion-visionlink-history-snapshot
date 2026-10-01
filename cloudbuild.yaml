@@ -1,0 +1,95 @@
+# Update the existing Cloud Run job and keep it a dry run.
+#
+# Application env var: NOTION_TOKEN
+# Secret Manager:      Notion_Google_Cloud_Sync
+# Cloud Run mapping:   NOTION_TOKEN=Notion_Google_Cloud_Sync:latest
+# Service account:     visionlink-history-runner@work-projects-486912.iam.gserviceaccount.com
+# Build identity:      PROJECT_NUMBER@cloudbuild.gserviceaccount.com
+#
+# This config does not execute the job, does not set DRY_RUN=false, and does
+# not create Cloud Scheduler. Source stays read-only. History stays append-only.
+
+substitutions:
+  _DRY_RUN: "true"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 1800s
+
+steps:
+  - id: guard
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        python3 --version
+        if [[ "${_DRY_RUN}" != "true" ]]; then
+          echo "ERROR: Refusing to deploy because _DRY_RUN is not true. This build never enables production writes."
+          exit 1
+        fi
+        if [[ "$PROJECT_ID" != "work-projects-486912" ]]; then
+          echo "ERROR: Refusing to deploy outside project work-projects-486912 (got ${PROJECT_ID})."
+          exit 1
+        fi
+        if ! gcloud artifacts repositories describe cloud-run-source-deploy \
+          --location=us-west1 \
+          --project="$PROJECT_ID" >/dev/null 2>&1; then
+          echo "Artifact Registry repository cloud-run-source-deploy is missing in us-west1. Creating that existing Cloud Run source repository."
+          gcloud artifacts repositories create cloud-run-source-deploy \
+            --repository-format=docker \
+            --location=us-west1 \
+            --project="$PROJECT_ID" \
+            --description="Images for notion-visionlink-history-snapshot"
+        fi
+
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - us-west1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/notion-visionlink-history-snapshot:$BUILD_ID
+      - -t
+      - us-west1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/notion-visionlink-history-snapshot:dry-run
+      - .
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - us-west1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/notion-visionlink-history-snapshot
+
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        if [[ "${_DRY_RUN}" != "true" ]]; then
+          echo "ERROR: Refusing to deploy because _DRY_RUN is not true. This build never enables production writes."
+          exit 1
+        fi
+        ENV_VARS="^@^DRY_RUN=true@SOURCE_DATABASE_ID=3db284de-cb43-80ed-9b6f-fc20d6cc20eb@DESTINATION_DATABASE_TITLE=Cat VisionLink History@DESTINATION_DATABASE_ID=0357c6bd-2650-4dfc-affb-72430beaca84@BUSINESS_TIMEZONE=America/Los_Angeles"
+        gcloud run jobs deploy notion-visionlink-history-snapshot \
+          --project="$PROJECT_ID" \
+          --region=us-west1 \
+          --image="us-west1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/notion-visionlink-history-snapshot:$BUILD_ID" \
+          --service-account="visionlink-history-runner@$PROJECT_ID.iam.gserviceaccount.com" \
+          --set-secrets="NOTION_TOKEN=Notion_Google_Cloud_Sync:latest" \
+          --set-env-vars="$$ENV_VARS" \
+          --tasks=1 \
+          --parallelism=1 \
+          --max-retries=3 \
+          --task-timeout=1800 \
+          --memory=512Mi \
+          --cpu=1
+        gcloud run jobs describe notion-visionlink-history-snapshot \
+          --project="$PROJECT_ID" \
+          --region=us-west1 \
+          --format=json \
+          | python3 deploy/assert_job_config.py
+        echo "Deployed DRY_RUN=true. Did not execute the job. Did not create Cloud Scheduler."

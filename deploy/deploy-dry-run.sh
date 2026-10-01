@@ -2,21 +2,24 @@
 # Deploy the VisionLink history snapshot Cloud Run job and run it once.
 #
 # This script always deploys DRY_RUN=true. It does not set DRY_RUN=false,
-# does not create Cloud Scheduler, and does not print NOTION_TOKEN.
+# does not create Cloud Scheduler, and does not print secret values.
+#
+# Application environment variable: NOTION_TOKEN
+# Secret Manager secret:            Notion_Google_Cloud_Sync
+# Cloud Run mapping:                NOTION_TOKEN=Notion_Google_Cloud_Sync:latest
 #
 # Project: work-projects-486912
 # Region:  us-west1
 # Job:     notion-visionlink-history-snapshot
-# Runner:  notion-visionlink-history-runner
+# Runner:  visionlink-history-runner@work-projects-486912.iam.gserviceaccount.com
 
 set -euo pipefail
 
 PROJECT="work-projects-486912"
 REGION="us-west1"
 JOB="notion-visionlink-history-snapshot"
-SA_NAME="notion-visionlink-history-runner"
-SA_EMAIL="${SA_NAME}@${PROJECT}.iam.gserviceaccount.com"
-SECRET_NAME="NOTION_TOKEN"
+SA_EMAIL="visionlink-history-runner@${PROJECT}.iam.gserviceaccount.com"
+SECRET_RESOURCE="Notion_Google_Cloud_Sync"
 SOURCE_DATABASE_ID="3db284de-cb43-80ed-9b6f-fc20d6cc20eb"
 DESTINATION_DATABASE_ID="0357c6bd-2650-4dfc-affb-72430beaca84"
 DESTINATION_TITLE="Cat VisionLink History"
@@ -31,7 +34,11 @@ Usage: deploy/deploy-dry-run.sh
 Deploys ${JOB} in ${PROJECT} / ${REGION} with DRY_RUN=true, executes it once,
 and prints redacted logs. Requires an active gcloud account.
 
+Mounts Secret Manager ${SECRET_RESOURCE} as NOTION_TOKEN
+(NOTION_TOKEN=${SECRET_RESOURCE}:latest).
+
 Does not set DRY_RUN=false and does not create Cloud Scheduler.
+Does not create a service account. The runner ${SA_EMAIL} must already exist.
 EOF
   exit 0
 fi
@@ -74,6 +81,7 @@ if [[ -z "${ACTIVE_ACCOUNT}" ]]; then
 fi
 
 echo "Deploying ${JOB} as ${ACTIVE_ACCOUNT} with DRY_RUN=true"
+echo "Secret mapping: NOTION_TOKEN=${SECRET_RESOURCE}:latest"
 "${GCLOUD}" config set project "${PROJECT}" >/dev/null
 
 "${GCLOUD}" services enable \
@@ -86,18 +94,18 @@ echo "Deploying ${JOB} as ${ACTIVE_ACCOUNT} with DRY_RUN=true"
   --project="${PROJECT}"
 
 if ! "${GCLOUD}" iam service-accounts describe "${SA_EMAIL}" --project="${PROJECT}" >/dev/null 2>&1; then
-  "${GCLOUD}" iam service-accounts create "${SA_NAME}" \
-    --project="${PROJECT}" \
-    --display-name="VisionLink history snapshot runner"
-fi
-
-# Confirm the secret exists. Do not read or print its value, and do not create one.
-if ! "${GCLOUD}" secrets describe "${SECRET_NAME}" --project="${PROJECT}" >/dev/null; then
-  echo "ERROR: Secret ${SECRET_NAME} was not found in ${PROJECT}. Refusing to create a replacement." >&2
+  echo "ERROR: Service account ${SA_EMAIL} does not exist." >&2
+  echo "Refusing to create a service account. The runner must already exist." >&2
   exit 1
 fi
 
-"${GCLOUD}" secrets add-iam-policy-binding "${SECRET_NAME}" \
+# Confirm the secret exists. Do not read or print its value, and do not create one.
+if ! "${GCLOUD}" secrets describe "${SECRET_RESOURCE}" --project="${PROJECT}" >/dev/null; then
+  echo "ERROR: Secret ${SECRET_RESOURCE} was not found in ${PROJECT}. Refusing to create a replacement." >&2
+  exit 1
+fi
+
+"${GCLOUD}" secrets add-iam-policy-binding "${SECRET_RESOURCE}" \
   --project="${PROJECT}" \
   --member="serviceAccount:${SA_EMAIL}" \
   --role="roles/secretmanager.secretAccessor" \
@@ -121,17 +129,22 @@ fi
   --role="roles/iam.serviceAccountUser" \
   --quiet >/dev/null
 
+# This project's working Cloud Build identity uses the cloudbuild domain.
 PROJECT_NUMBER="$("${GCLOUD}" projects describe "${PROJECT}" --format='value(projectNumber)')"
-for BUILD_SA in \
-  "${PROJECT_NUMBER}@clou.gserviceaccount.com" \
-  "${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
-do
-  "${GCLOUD}" iam service-accounts add-iam-policy-binding "${SA_EMAIL}" \
-    --project="${PROJECT}" \
-    --member="serviceAccount:${BUILD_SA}" \
-    --role="roles/iam.serviceAccountUser" \
-    --quiet >/dev/null
-done
+BUILD_SA="${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
+"${GCLOUD}" iam service-accounts add-iam-policy-binding "${SA_EMAIL}" \
+  --project="${PROJECT}" \
+  --member="serviceAccount:${BUILD_SA}" \
+  --role="roles/iam.serviceAccountUser" \
+  --quiet >/dev/null
+"${GCLOUD}" projects add-iam-policy-binding "${PROJECT}" \
+  --member="serviceAccount:${BUILD_SA}" \
+  --role="roles/run.developer" \
+  --quiet >/dev/null
+"${GCLOUD}" projects add-iam-policy-binding "${PROJECT}" \
+  --member="serviceAccount:${BUILD_SA}" \
+  --role="roles/artifactregistry.writer" \
+  --quiet >/dev/null
 
 ENV_VARS="^@^DRY_RUN=true@SOURCE_DATABASE_ID=${SOURCE_DATABASE_ID}@DESTINATION_DATABASE_TITLE=${DESTINATION_TITLE}@DESTINATION_DATABASE_ID=${DESTINATION_DATABASE_ID}@BUSINESS_TIMEZONE=America/Los_Angeles"
 
@@ -140,7 +153,7 @@ ENV_VARS="^@^DRY_RUN=true@SOURCE_DATABASE_ID=${SOURCE_DATABASE_ID}@DESTINATION_D
   --source="${ROOT}" \
   --region="${REGION}" \
   --service-account="${SA_EMAIL}" \
-  --set-secrets="${SECRET_NAME}=${SECRET_NAME}:latest" \
+  --set-secrets="NOTION_TOKEN=Notion_Google_Cloud_Sync:latest" \
   --set-env-vars="${ENV_VARS}" \
   --tasks=1 \
   --parallelism=1 \
@@ -158,35 +171,12 @@ ENV_VARS="^@^DRY_RUN=true@SOURCE_DATABASE_ID=${SOURCE_DATABASE_ID}@DESTINATION_D
 
 assert_dry_run() {
   local phase="$1"
-  local description
-  description="$("${GCLOUD}" run jobs describe "${JOB}" \
+  echo "Checking job configuration (${phase})"
+  "${GCLOUD}" run jobs describe "${JOB}" \
     --project="${PROJECT}" \
     --region="${REGION}" \
-    --format=json)"
-  DRY_PHASE="${phase}" python3 -c '
-import json, os, sys
-phase = os.environ["DRY_PHASE"]
-job = json.loads(sys.stdin.read())
-containers = (
-    job.get("spec", {})
-    .get("template", {})
-    .get("spec", {})
-    .get("template", {})
-    .get("spec", {})
-    .get("containers", [])
-)
-if not containers:
-    containers = job.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
-env = containers[0].get("env", []) if containers else []
-value = None
-for item in env:
-    if item.get("name") == "DRY_RUN":
-        value = item.get("value")
-if value != "true":
-    print(f"ERROR: {phase}: job DRY_RUN is {value!r}, expected true. Not executing.", file=sys.stderr)
-    sys.exit(1)
-print(f"{phase}: DRY_RUN=true")
-' <<<"${description}"
+    --format=json \
+    | python3 "${ROOT}/deploy/assert_job_config.py"
 }
 
 assert_dry_run "before execute"
