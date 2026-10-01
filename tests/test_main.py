@@ -8,13 +8,15 @@ from datetime import datetime, timezone
 from src.main import emit, run_job
 from src.snapshot import format_summary
 from tests.fakes import FakeNotion
-from tests.notion_fixtures import history_database, source_database, source_page
+from tests.notion_fixtures import history_database, seed_machines, source_database, source_page
 from tests.test_snapshot import _config
 
 
 def test_incomplete_run_returns_nonzero_and_summary_counts():
+    pages = [source_page("GOOD"), source_page("BAD")]
     fake = FakeNotion(source_database(), history_database(), fail_creates_for={"BAD"})
-    fake.pages[fake.source["id"]] = [source_page("GOOD"), source_page("BAD")]
+    fake.pages[fake.source["id"]] = pages
+    seed_machines(fake, pages)
 
     code = run_job(
         _config(),
@@ -28,8 +30,10 @@ def test_incomplete_run_returns_nonzero_and_summary_counts():
 
 
 def test_success_returns_zero_and_summary_shape():
+    pages = [source_page("57.29")]
     fake = FakeNotion(source_database(), history_database())
-    fake.pages[fake.source["id"]] = [source_page("57.29")]
+    fake.pages[fake.source["id"]] = pages
+    seed_machines(fake, pages)
     captured = {}
 
     def logger(severity, message, **fields):
@@ -44,7 +48,7 @@ def test_success_returns_zero_and_summary_shape():
 
     assert code == 0
     finished = captured["snapshot finished"]
-    assert finished["version"] == "0.01.01"
+    assert finished["version"] == "0.01.02"
     assert finished["runId"] == "2026-10-01T10:00:00_America-Los_Angeles"
     assert finished["sourceRecords"] == 1
     assert finished["historyCreated"] == 1
@@ -65,7 +69,7 @@ def test_success_returns_zero_and_summary_shape():
     assert result.would_create == 1
     assert result.history_created == 0
     text = format_summary(result)
-    assert "Version: 0.01.01" in text
+    assert "Version: 0.01.02" in text
     assert "Status: SUCCESS" in text
     assert "Writes performed: 0" in text
 

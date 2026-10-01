@@ -8,7 +8,13 @@ from zoneinfo import ZoneInfo
 from src.config import VERSION, Config
 from src.snapshot import resolve_run_id, run_snapshot
 from tests.fakes import FakeNotion
-from tests.notion_fixtures import history_database, source_database, source_page
+from tests.notion_fixtures import (
+    history_database,
+    machine_page,
+    seed_machines,
+    source_database,
+    source_page,
+)
 
 LA = ZoneInfo("America/Los_Angeles")
 EXECUTION = datetime(2026, 10, 1, 17, 5, 11, tzinfo=timezone.utc)  # 10:05:11 PDT
@@ -51,9 +57,13 @@ def _config(**overrides):
     return Config(**values)
 
 
-def _run(pages, **config_overrides):
+def _run(pages, *, machines="unique", **config_overrides):
     fake = FakeNotion(source_database(), history_database())
     fake.pages[fake.source["id"]] = pages
+    if machines == "unique":
+        seed_machines(fake, pages)
+    else:
+        fake.pages[fake.machines["id"]] = list(machines)
     logs = []
 
     def logger(severity, message, **fields):
@@ -81,6 +91,7 @@ def test_property_mapping_snapshot_date_and_last_reported():
     properties = fake.created[0][1]
     assert fake.created[0][0] == "0357c6bd-2650-4dfc-affb-72430beaca84"
     assert properties["Machine ID"]["title"][0]["text"]["content"] == "57.29"
+    assert properties["Machine"]["relation"] == [{"id": "machines-page-57.29"}]
     assert properties["Hours"]["number"] == 47451.616944
     assert "San Bernardino" in properties["Location"]["rich_text"][0]["text"]["content"]
     assert properties["Last Reported"]["date"]["start"] == "2026-10-01T08:02:00.000Z"
@@ -96,8 +107,7 @@ def test_property_mapping_snapshot_date_and_last_reported():
     )
     assert properties["Status"]["select"]["name"] == "Asset Off"
     assert properties["Map"]["url"].endswith("query=34.12243,-117.34482")
-    assert "relation" not in str(properties)
-    assert "Machine" not in properties
+    assert "Related to Projects (VisionLink History)" not in properties
     assert "Works Manager Project" not in properties
     assert "Assigned Contact" not in properties
     mapped_sources = {item.source_property for item in result.mappings}
@@ -167,12 +177,10 @@ def test_dry_run_reads_and_does_not_write():
 
 
 def test_one_failed_machine_does_not_stop_the_rest():
+    pages = [source_page("GOOD-1"), source_page("BAD"), source_page("GOOD-2")]
     fake = FakeNotion(source_database(), history_database(), fail_creates_for={"BAD"})
-    fake.pages[fake.source["id"]] = [
-        source_page("GOOD-1"),
-        source_page("BAD"),
-        source_page("GOOD-2"),
-    ]
+    fake.pages[fake.source["id"]] = pages
+    seed_machines(fake, pages)
     logs = []
     result = run_snapshot(
         _config(),
@@ -288,8 +296,10 @@ def test_run_id_slots_manual_runs_and_dst():
 def test_schema_difference_log_names_expected_and_actual_types():
     history = history_database()
     history["properties"]["Location"]["type"] = "number"
+    pages = [source_page("57.29")]
     fake = FakeNotion(source_database(), history)
-    fake.pages[fake.source["id"]] = [source_page("57.29")]
+    fake.pages[fake.source["id"]] = pages
+    seed_machines(fake, pages)
     logs = []
     run_snapshot(
         _config(),
@@ -328,16 +338,20 @@ def test_snapshot_date_wall_time_covers_pdt_pst_and_utc():
     assert _instant(pdt_date) == EXECUTION
 
     pst_moment = datetime(2026, 1, 15, 18, 5, 11, tzinfo=timezone.utc)  # 10:05:11 PST
+    pst_pages = [source_page("51.27", include_optional=False)]
     pst_client = FakeNotion(source_database(), history_database())
-    pst_client.pages[pst_client.source["id"]] = [source_page("51.27", include_optional=False)]
+    pst_client.pages[pst_client.source["id"]] = pst_pages
+    seed_machines(pst_client, pst_pages)
     run_snapshot(_config(), pst_client, lambda *args, **kwargs: None, now=pst_moment, pause_seconds=0)
     pst_date = pst_client.created[0][1]["Snapshot Date"]["date"]
     assert pst_date == {"start": "2026-01-15T10:05:11", "time_zone": "America/Los_Angeles"}
     _assert_notion_date(pst_date)
     assert _instant(pst_date) == pst_moment
 
+    utc_pages = [source_page("12.04", include_optional=False)]
     utc_client = FakeNotion(source_database(), history_database())
-    utc_client.pages[utc_client.source["id"]] = [source_page("12.04", include_optional=False)]
+    utc_client.pages[utc_client.source["id"]] = utc_pages
+    seed_machines(utc_client, utc_pages)
     run_snapshot(
         _config(business_timezone="UTC"),
         utc_client,
@@ -360,14 +374,16 @@ def test_last_reported_keeps_utc_and_normalizes_zone_with_offset():
     assert utc_reported == {"start": "2026-10-01T15:02:00.000Z"}
     assert _instant(utc_reported) == datetime(2026, 10, 1, 15, 2, tzinfo=timezone.utc)
 
-    offset_client = FakeNotion(source_database(), history_database())
-    offset_client.pages[offset_client.source["id"]] = [
+    offset_pages = [
         source_page(
             "51.27",
             last_reported="2026-10-01T08:02:00.000-07:00",
             last_reported_time_zone="America/Los_Angeles",
         )
     ]
+    offset_client = FakeNotion(source_database(), history_database())
+    offset_client.pages[offset_client.source["id"]] = offset_pages
+    seed_machines(offset_client, offset_pages)
     run_snapshot(
         _config(),
         offset_client,
@@ -381,14 +397,16 @@ def test_last_reported_keeps_utc_and_normalizes_zone_with_offset():
     _assert_notion_date(pacific)
     assert _instant(pacific) == datetime(2026, 10, 1, 15, 2, tzinfo=timezone.utc)
 
-    zoned_utc = FakeNotion(source_database(), history_database())
-    zoned_utc.pages[zoned_utc.source["id"]] = [
+    winter_pages = [
         source_page(
             "12.04",
             last_reported="2026-01-15T18:05:11Z",
             last_reported_time_zone="America/Los_Angeles",
         )
     ]
+    zoned_utc = FakeNotion(source_database(), history_database())
+    zoned_utc.pages[zoned_utc.source["id"]] = winter_pages
+    seed_machines(zoned_utc, winter_pages)
     run_snapshot(
         _config(),
         zoned_utc,
@@ -400,3 +418,63 @@ def test_last_reported_keeps_utc_and_normalizes_zone_with_offset():
     assert winter == {"start": "2026-01-15T10:05:11", "time_zone": "America/Los_Angeles"}
     _assert_notion_date(winter)
     assert _instant(winter) == datetime(2026, 1, 15, 18, 5, 11, tzinfo=timezone.utc)
+
+
+def test_machine_relation_exact_match_unmatched_and_duplicate():
+    matched, fake, _logs = _run([source_page("57.29")])
+    assert matched.history_created == 1
+    assert matched.failed == 0
+    assert fake.created[0][0] == "0357c6bd-2650-4dfc-affb-72430beaca84"
+    assert fake.created[0][1]["Machine"] == {"relation": [{"id": "machines-page-57.29"}]}
+    assert "Related to Projects (VisionLink History)" not in fake.created[0][1]
+    assert all(database_id != fake.machines["id"] for database_id, _props in fake.created)
+    assert all(database_id != fake.source["id"] for database_id, _props in fake.created)
+
+    missing, missing_fake, missing_logs = _run([source_page("57.29")], machines=[])
+    assert missing.history_created == 0
+    assert missing.failed == 1
+    assert missing.failed_machine_ids == ["57.29"]
+    assert missing_fake.created == []
+    assert missing_fake.write_calls == 0
+    failure = next(
+        fields
+        for _severity, message, fields in missing_logs
+        if message.startswith("machine snapshot failed")
+    )
+    assert "no Machines record" in failure["exceptionMessage"]
+    assert failure["property"] == "Machine"
+
+    duplicated, duplicate_fake, duplicate_logs = _run(
+        [source_page("57.29")],
+        machines=[
+            machine_page("57.29", page_id="machines-a"),
+            machine_page("57.29", page_id="machines-b"),
+        ],
+    )
+    assert duplicated.history_created == 0
+    assert duplicated.failed == 1
+    assert duplicate_fake.created == []
+    duplicate_failure = next(
+        fields
+        for _severity, message, fields in duplicate_logs
+        if message.startswith("machine snapshot failed")
+    )
+    assert "matches 2 Machines records" in duplicate_failure["exceptionMessage"]
+    assert "machines-a" not in str(duplicate_fake.created)
+    warning = next(
+        fields
+        for _severity, message, fields in duplicate_logs
+        if message == "duplicate Machine IDs in Machines"
+    )
+    assert warning["machineIds"] == ["57.29"]
+    assert warning["pageIds"]["57.29"] == ["machines-a", "machines-b"]
+
+
+def test_dry_run_logs_machine_relation_and_writes_nothing():
+    result, fake, logs = _run([source_page("57.29")], dry_run=True)
+    assert result.would_create == 1
+    assert result.history_created == 0
+    assert result.writes_performed == 0
+    assert fake.write_calls == 0
+    dry = next(fields for _severity, message, fields in logs if message == "dry run would create history record")
+    assert dry["properties"]["Machine"] == ["machines-page-57.29"]

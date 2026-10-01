@@ -153,15 +153,39 @@ def test_authorization_header_value_is_redacted():
     assert caught.value.status_code == 400
 
 
-def test_create_refuses_source_database_and_relations():
-    client, session, _sleeps = _client([])
+def test_create_refuses_source_and_allows_only_history_machine_relation():
+    client, session, _sleeps = _client([FakeResponse(200, {"id": "history-page"})])
     source = "3db284de-cb43-80ed-9b6f-fc20d6cc20eb"
+    history = "0357c6bd-2650-4dfc-affb-72430beaca84"
+    machines = "241a2acd-f833-410a-9c0a-99e376add55e"
+    forbidden = (source, machines)
     with pytest.raises(NotionError, match="protected"):
-        client.create_page(source, {"Machine ID": {"title": []}}, forbidden_database_ids=(source,))
+        client.create_page(source, {"Machine ID": {"title": []}}, forbidden_database_ids=forbidden)
+    with pytest.raises(NotionError, match="protected"):
+        client.create_page(
+            machines,
+            {"Machine": {"relation": [{"id": "machine-page"}]}},
+            forbidden_database_ids=forbidden,
+        )
     with pytest.raises(NotionError, match="relation"):
         client.create_page(
-            "0357c6bd-2650-4dfc-affb-72430beaca84",
-            {"Machine": {"relation": [{"id": "x"}]}},
-            forbidden_database_ids=(source,),
+            history,
+            {"Related to Projects (VisionLink History)": {"relation": [{"id": "project"}]}},
+            forbidden_database_ids=forbidden,
+        )
+    with pytest.raises(NotionError, match="relation"):
+        client.create_page(
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            {"Machine": {"relation": [{"id": "machine-page"}]}},
         )
     assert session.calls == []
+    created = client.create_page(
+        history,
+        {"Machine": {"relation": [{"id": "machine-page"}]}},
+        forbidden_database_ids=forbidden,
+    )
+    assert created["id"] == "history-page"
+    assert session.calls[0]["json"]["parent"] == {"database_id": history}
+    assert session.calls[0]["json"]["properties"]["Machine"] == {
+        "relation": [{"id": "machine-page"}]
+    }
