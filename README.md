@@ -5,7 +5,7 @@ Cat VisionLink History. Each weekday snapshot answers questions such as where
 a machine was, which job it was on, what its hours were, and when VisionLink
 last reported, at a specific copy time.
 
-Version: `0.01.02`
+Version: `0.01.03`
 
 ## The only write path
 
@@ -18,13 +18,14 @@ change the source database. It does not delete historical rows, including when
 a retry finds rows it already created.
 
 Each new history page sets **Machine** when Machines
-(`241a2acd-f833-410a-9c0a-99e376add55e`) has exactly one record whose
-**Machine ID** title equals the snapshot Machine ID. Notion fills **VisionLink
-History** on that Machines page because the relation is two-way. This job
-never edits the Machines page. It does not set **Related to Projects
-(VisionLink History)**. Source **Assigned Contact** and **Works Manager
-Project** are not copied. A missing or duplicate Machines match fails that
-record only.
+(database `8248e735-8458-4a00-9b41-cbe1eff6b975`) has exactly one record whose
+**Machine ID** title equals the snapshot Machine ID. The Machines data source
+id `241a2acd-f833-410a-9c0a-99e376add55e` is not the API query target. Notion
+fills **VisionLink History** on that Machines page because the relation is
+two-way. This job never edits the Machines page. It does not set **Related to
+Projects (VisionLink History)**. Source **Assigned Contact** and **Works
+Manager Project** are not copied. A missing or duplicate Machines match fails
+that record only.
 
 ## Snapshot Date and Last Reported
 

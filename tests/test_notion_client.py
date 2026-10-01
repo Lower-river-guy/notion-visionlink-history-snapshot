@@ -157,7 +157,7 @@ def test_create_refuses_source_and_allows_only_history_machine_relation():
     client, session, _sleeps = _client([FakeResponse(200, {"id": "history-page"})])
     source = "3db284de-cb43-80ed-9b6f-fc20d6cc20eb"
     history = "0357c6bd-2650-4dfc-affb-72430beaca84"
-    machines = "241a2acd-f833-410a-9c0a-99e376add55e"
+    machines = "8248e735-8458-4a00-9b41-cbe1eff6b975"
     forbidden = (source, machines)
     with pytest.raises(NotionError, match="protected"):
         client.create_page(source, {"Machine ID": {"title": []}}, forbidden_database_ids=forbidden)

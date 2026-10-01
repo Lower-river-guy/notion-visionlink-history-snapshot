@@ -75,7 +75,7 @@ def history_database():
             "Snapshot Run ID": {"type": "rich_text", "rich_text": {}},
             "Machine": {
                 "type": "relation",
-                "relation": {"database_id": "241a2acd-f833-410a-9c0a-99e376add55e"},
+                "relation": {"database_id": "8248e735-8458-4a00-9b41-cbe1eff6b975"},
             },
             "Machine Series": {"type": "formula", "formula": {}},
             "Related to Projects (VisionLink History)": {"type": "relation", "relation": {}},
@@ -85,7 +85,7 @@ def history_database():
 
 def machines_database():
     return {
-        "id": "241a2acd-f833-410a-9c0a-99e376add55e",
+        "id": "8248e735-8458-4a00-9b41-cbe1eff6b975",
         "title": [{"plain_text": "Machines"}],
         "properties": {
             "Machine ID": {"type": "title", "title": {}},
