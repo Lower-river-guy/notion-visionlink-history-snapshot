@@ -16,9 +16,11 @@
 #   NOTION_TOKEN=Notion_Google_Cloud_Sync:latest
 #   DRY_RUN=true
 #
-# It does not set DRY_RUN=false, does not execute the job, and does not create
-# Cloud Scheduler. The desired schedule remains 10:00 AM America/Los_Angeles,
-# Monday-Friday, cron 0 10 * * 1-5, and stays undeployed.
+# It does not change the job template to DRY_RUN=false and does not execute
+# the job. After the build, deploy/ensure_weekday_scheduler.sh ensures the one
+# weekday scheduler: 10:00 AM America/Los_Angeles, Monday-Friday, cron
+# 0 10 * * 1-5. That scheduler sends an execution override of DRY_RUN=false
+# and SNAPSHOT_SLOT=10:00. The resting job stays DRY_RUN=true.
 #
 # The deploy job uses the GitHub environment "gcp". This repository's immutable
 # OIDC subject includes the owner id, repository id, and branch ref. On this
@@ -89,3 +91,13 @@ jobs:
       - name: Submit dry-run Cloud Build
         if: steps.creds.outputs.available == 'true'
         run: gcloud builds submit --config cloudbuild.yaml --project work-projects-486912 --service-account "projects/work-projects-486912/serviceAccounts/github-visionlink-deployer@work-projects-486912.iam.gserviceaccount.com"
+      - name: Ensure weekday 10am scheduler
+        if: steps.creds.outputs.available == 'true'
+        run: |
+          set -euo pipefail
+          bash deploy/ensure_weekday_scheduler.sh
+          gcloud run jobs describe notion-visionlink-history-snapshot \
+            --project=work-projects-486912 \
+            --region=us-west1 \
+            --format=json \
+            | python3 deploy/assert_job_config.py

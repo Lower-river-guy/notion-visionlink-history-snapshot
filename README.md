@@ -60,22 +60,25 @@ Run id rules:
    civil timestamp. Local retries are stable only when `SNAPSHOT_RUN_ID` or
    `CLOUD_RUN_EXECUTION` is set.
 
-When a scheduler is added later, one job passes `SNAPSHOT_SLOT=10:00`.
-Task retries are capped (`--max-retries=3`) so a failed attempt cannot run
-long enough to adopt the next day's slot id. `deploy/deploy-dry-run.sh` does
-not create that scheduler job.
+The weekday scheduler passes `SNAPSHOT_SLOT=10:00` only as an execution
+override. Task retries are capped (`--max-retries=3`) so a failed attempt
+cannot run long enough to adopt the next day's slot id.
+`deploy/deploy-dry-run.sh` does not create that scheduler job.
 
 ## Schedule
 
-Desired permanent schedule, not created or enabled by this repository:
+One Cloud Scheduler job, `notion-visionlink-history-weekday-10am`:
 
-- 10:00 AM America/Los_Angeles, Monday–Friday, `SNAPSHOT_SLOT=10:00`
+- 10:00 AM America/Los_Angeles, Monday–Friday
+- Cron: `0 10 * * 1-5`
+- Time zone: `America/Los_Angeles` (not a fixed UTC offset)
+- Target: Cloud Run job `notion-visionlink-history-snapshot` in `us-west1`
+- Execution override: `DRY_RUN=false` and `SNAPSHOT_SLOT=10:00`
 
-Cron: `0 10 * * 1-5` with time zone `America/Los_Angeles`
-(not a fixed UTC offset).
-
-Do not create or enable Cloud Scheduler from this repository's deploy script.
-Deployed revisions stay `DRY_RUN=true` until a controlled run says otherwise.
+The Cloud Run job template stays `DRY_RUN=true` with `SNAPSHOT_SLOT` unset, so
+a manual run and `.github/workflows/diagnostic-run.yml` still see a dry-run
+job at rest. Cloud Run merges the override into that execution only. There is
+no second Cloud Run job and no other VisionLink history schedule.
 
 ## Dry run
 
@@ -148,13 +151,16 @@ Federation as
 `github-visionlink-deployer@work-projects-486912.iam.gserviceaccount.com`
 and submits `cloudbuild.yaml`. That build updates this Cloud Run job and keeps
 `DRY_RUN=true` and `NOTION_TOKEN=Notion_Google_Cloud_Sync:latest`. It does
-not execute a production snapshot and does not create Cloud Scheduler.
-Merging to `main` does not enable writes.
+not execute a production snapshot. The same workflow then runs
+`deploy/ensure_weekday_scheduler.sh`, which creates or updates the one
+weekday 10:00 AM Pacific scheduler. A scheduled execution overrides
+`DRY_RUN` to `false`. The resting job stays `DRY_RUN=true`.
 
 The runtime account is not the GitHub deployment identity. One-time setup is
-`deploy/bootstrap-gcp-auth.sh`. It does not deploy the application. The
-desired schedule remains 10:00 AM America/Los_Angeles, Monday–Friday, cron
-`0 10 * * 1-5`, and is not created by that script.
+`deploy/bootstrap-gcp-auth.sh`. It does not deploy the application and does
+not create the scheduler. It grants the deployer permission to create,
+update, and delete Cloud Scheduler jobs, and lets the Cloud Scheduler service
+agent act as the deployer so the weekday job can call the Cloud Run API.
 
 `DESTINATION_DATABASE_ID` is `0357c6bd-2650-4dfc-affb-72430beaca84`, the
 history database found via the Notion API. Every run still checks that its
@@ -169,7 +175,7 @@ title is exactly `Cat VisionLink History`.
 | `SOURCE_DATABASE_ID` | Source database. Default is Cat VisionLink. |
 | `DESTINATION_DATABASE_TITLE` | Exact history title. Default `Cat VisionLink History`. |
 | `DESTINATION_DATABASE_ID` | Optional pin. The title must still match. |
-| `SNAPSHOT_SLOT` | `10:00` for the weekday slot. Unset for manual runs. |
+| `SNAPSHOT_SLOT` | `10:00` on the weekday scheduler execution only. Unset on the resting job and on manual runs. |
 | `SNAPSHOT_RUN_ID` | Optional explicit run id. Unset in production. |
 | `BUSINESS_TIMEZONE` | Default `America/Los_Angeles`. |
 | `CLOUD_RUN_EXECUTION` | Set by Cloud Run. Used for manual run ids. |
@@ -204,7 +210,10 @@ tests/                 unit tests
 deploy/deploy-dry-run.sh
 deploy/bootstrap-gcp-auth.sh
 deploy/assert_job_config.py
+deploy/weekday_scheduler.py
+deploy/ensure_weekday_scheduler.sh
 cloudbuild.yaml
 .github/workflows/deploy-dry-run.yml
+.github/workflows/diagnostic-run.yml
 Dockerfile             Python 3.12
 ```
