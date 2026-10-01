@@ -6,10 +6,13 @@ import os
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
-VERSION = "0.01.02"
+VERSION = "0.01.03"
 
 SOURCE_DATABASE_ID_DEFAULT = "3db284de-cb43-80ed-9b6f-fc20d6cc20eb"
-MACHINES_DATABASE_ID = "241a2acd-f833-410a-9c0a-99e376add55e"
+# Database id for GET/POST /v1/databases/{id}. The Machines data source id
+# 241a2acd-f833-410a-9c0a-99e376add55e is not a database id and 404s on those
+# endpoints, so it is never the query target.
+MACHINES_DATABASE_ID = "8248e735-8458-4a00-9b41-cbe1eff6b975"
 DESTINATION_DATABASE_TITLE = "Cat VisionLink History"
 BUSINESS_TIMEZONE = "America/Los_Angeles"
 SCHEDULED_SLOTS = ("10:00",)

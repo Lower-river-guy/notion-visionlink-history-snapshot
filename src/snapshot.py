@@ -421,6 +421,7 @@ def _load_machine_index(
     *,
     destination_database_id: str,
 ):
+    # Database id only. The Machines data source id is not a query target.
     machines_id = normalize_notion_id(config.machines_database_id or MACHINES_DATABASE_ID)
     if same_notion_id(machines_id, config.source_database_id):
         raise SnapshotFatal(
