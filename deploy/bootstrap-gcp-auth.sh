@@ -20,6 +20,7 @@ DEPLOYER_NAME="github-visionlink-deployer"
 DEPLOYER="github-visionlink-deployer@work-projects-486912.iam.gserviceaccount.com"
 RUNNER="visionlink-history-runner@work-projects-486912.iam.gserviceaccount.com"
 SCHEDULER_ROLE="visionlinkHistorySchedulerDeployer"
+BUILD_SUBMIT_ROLE="visionlinkHistoryBuildSubmitter"
 AR_LOCATION="us-west1"
 AR_REPO="cloud-run-source-deploy"
 GITHUB_REPO="Lower-river-guy/notion-visionlink-history-snapshot"
@@ -33,6 +34,8 @@ PROVIDER_DISPLAY_NAME="GitHub Actions"
 DEPLOYER_DISPLAY_NAME="GitHub Actions deployer for VisionLink history snapshot"
 SCHEDULER_ROLE_TITLE="VisionLink history scheduler deploy"
 SCHEDULER_ROLE_DESCRIPTION="Create and update Cloud Scheduler jobs for the VisionLink history snapshot. Does not run or delete them."
+BUILD_SUBMIT_ROLE_TITLE="VisionLink history build submit"
+BUILD_SUBMIT_ROLE_DESCRIPTION="List Cloud Storage buckets so the deployer can stage Cloud Build source."
 AR_DESCRIPTION="Images for notion-visionlink-history-snapshot"
 
 require_max_length() {
@@ -51,6 +54,8 @@ require_max_length "Workload Identity Provider display name" "${PROVIDER_DISPLAY
 require_max_length "Deployer service account display name" "${DEPLOYER_DISPLAY_NAME}" 100
 require_max_length "Custom role title" "${SCHEDULER_ROLE_TITLE}" 100
 require_max_length "Custom role description" "${SCHEDULER_ROLE_DESCRIPTION}" 256
+require_max_length "Build submit role title" "${BUILD_SUBMIT_ROLE_TITLE}" 100
+require_max_length "Build submit role description" "${BUILD_SUBMIT_ROLE_DESCRIPTION}" 256
 require_max_length "Artifact Registry description" "${AR_DESCRIPTION}" 256
 
 # IDs are already valid, so they are not renamed to shorten a display name.
@@ -71,6 +76,7 @@ require_id "Workload Identity Pool id" "${POOL}" '^[a-z][a-z0-9-]{2,30}[a-z0-9]$
 require_id "Workload Identity Provider id" "${PROVIDER}" '^[a-z][a-z0-9-]{2,30}[a-z0-9]$'
 require_id "Deployer service account id" "${DEPLOYER_NAME}" '^[a-z][a-z0-9-]{4,28}[a-z0-9]$'
 require_id "Custom role id" "${SCHEDULER_ROLE}" '^[a-zA-Z][a-zA-Z0-9_.]{2,63}$'
+require_id "Build submit role id" "${BUILD_SUBMIT_ROLE}" '^[a-zA-Z][a-zA-Z0-9_.]{2,63}$'
 
 if [[ "$#" -gt 0 ]]; then
   echo "ERROR: This script takes no arguments. It only configures Workload Identity Federation." >&2
@@ -217,7 +223,8 @@ for ROLE in \
   roles/run.developer \
   roles/cloudbuild.builds.editor \
   roles/artifactregistry.writer \
-  roles/logging.logWriter
+  roles/logging.logWriter \
+  roles/serviceusage.serviceUsageConsumer
 do
   "${GCLOUD}" projects add-iam-policy-binding "${PROJECT}" \
     --member="serviceAccount:${DEPLOYER}" \
@@ -246,6 +253,40 @@ fi
   --member="serviceAccount:${DEPLOYER}" \
   --role="projects/${PROJECT}/roles/${SCHEDULER_ROLE}" \
   --quiet >/dev/null
+
+# gcloud builds submit reports a forbidden Cloud Build bucket when the caller
+# lacks serviceusage.services.use. It also needs to list buckets and write
+# source objects in PROJECT_cloudbuild. This is not project storage admin.
+BUILD_SUBMIT_PERMISSIONS="storage.buckets.get,storage.buckets.list"
+if "${GCLOUD}" iam roles describe "${BUILD_SUBMIT_ROLE}" --project="${PROJECT}" >/dev/null 2>&1; then
+  echo "Reusing custom role ${BUILD_SUBMIT_ROLE}"
+  "${GCLOUD}" iam roles update "${BUILD_SUBMIT_ROLE}" \
+    --project="${PROJECT}" \
+    --title="${BUILD_SUBMIT_ROLE_TITLE}" \
+    --description="${BUILD_SUBMIT_ROLE_DESCRIPTION}" \
+    --permissions="${BUILD_SUBMIT_PERMISSIONS}" \
+    --stage=GA >/dev/null
+else
+  "${GCLOUD}" iam roles create "${BUILD_SUBMIT_ROLE}" \
+    --project="${PROJECT}" \
+    --title="${BUILD_SUBMIT_ROLE_TITLE}" \
+    --description="${BUILD_SUBMIT_ROLE_DESCRIPTION}" \
+    --permissions="${BUILD_SUBMIT_PERMISSIONS}" \
+    --stage=GA >/dev/null
+fi
+"${GCLOUD}" projects add-iam-policy-binding "${PROJECT}" \
+  --member="serviceAccount:${DEPLOYER}" \
+  --role="projects/${PROJECT}/roles/${BUILD_SUBMIT_ROLE}" \
+  --quiet >/dev/null
+
+CLOUDBUILD_BUCKET="gs://${PROJECT}_cloudbuild"
+if ! "${GCLOUD}" storage buckets describe "${CLOUDBUILD_BUCKET}" >/dev/null 2>&1; then
+  echo "ERROR: Cloud Build staging bucket ${CLOUDBUILD_BUCKET} does not exist." >&2
+  exit 1
+fi
+"${GCLOUD}" storage buckets add-iam-policy-binding "${CLOUDBUILD_BUCKET}" \
+  --member="serviceAccount:${DEPLOYER}" \
+  --role="roles/storage.objectAdmin"
 
 if ! "${GCLOUD}" artifacts repositories describe "${AR_REPO}" \
   --location="${AR_LOCATION}" \

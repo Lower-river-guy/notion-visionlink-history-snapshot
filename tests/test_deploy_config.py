@@ -196,6 +196,11 @@ def test_bootstrap_wif_is_repository_scoped_and_does_not_deploy():
     assert "roles/iam.serviceAccountUser" in script
     assert "roles/run.developer" in script
     assert "roles/cloudbuild.builds.editor" in script
+    assert "roles/serviceusage.serviceUsageConsumer" in script
+    assert "roles/storage.objectAdmin" in script
+    assert "gs://${PROJECT}_cloudbuild" in script
+    assert 'BUILD_SUBMIT_ROLE="visionlinkHistoryBuildSubmitter"' in script
+    assert "roles/storage.admin" not in script
     assert "roles/owner" not in script
     assert "roles/editor" not in script
     assert "keys create" not in script
@@ -217,6 +222,8 @@ def test_bootstrap_wif_is_repository_scoped_and_does_not_deploy():
         'DEPLOYER_DISPLAY_NAME="GitHub Actions deployer for VisionLink history snapshot"': 100,
         'SCHEDULER_ROLE_TITLE="VisionLink history scheduler deploy"': 100,
         'SCHEDULER_ROLE_DESCRIPTION="Create and update Cloud Scheduler jobs for the VisionLink history snapshot. Does not run or delete them."': 256,
+        'BUILD_SUBMIT_ROLE_TITLE="VisionLink history build submit"': 100,
+        'BUILD_SUBMIT_ROLE_DESCRIPTION="List Cloud Storage buckets so the deployer can stage Cloud Build source."': 256,
         'AR_DESCRIPTION="Images for notion-visionlink-history-snapshot"': 256,
     }
     for assignment, limit in names.items():
