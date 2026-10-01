@@ -1,7 +1,8 @@
 """Read-only Notion access plus append-only page creates in the history database.
 
-This client has no update, archive, or delete methods. Relation properties are
-rejected. The source database id is refused as a write parent.
+This client has no update, archive, or delete methods. The only relation write
+allowed is the history property "Machine" on Cat VisionLink History. The source
+database id is refused as a write parent.
 """
 
 from __future__ import annotations
@@ -15,6 +16,8 @@ import requests
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 _SECRET_RE = re.compile(r"(?i)(bearer\s+)\S+|((?:secret_|ntn_)[A-Za-z0-9_\-]+)")
 _MAX_PAGES = 10_000
+HISTORY_DATABASE_ID = "0357c6bd-2650-4dfc-affb-72430beaca84"
+ALLOWED_RELATION_PROPERTY = "Machine"
 
 
 class NotionError(Exception):
@@ -54,6 +57,33 @@ def normalize_notion_id(value: str) -> str:
 
 def same_notion_id(left: str, right: str) -> bool:
     return normalize_notion_id(left).replace("-", "") == normalize_notion_id(right).replace("-", "")
+
+
+def _require_allowed_relation(database_id: str, name: str, value: dict[str, Any]) -> None:
+    """Allow only History.Machine, with exactly one related page id."""
+
+    if name != ALLOWED_RELATION_PROPERTY or not same_notion_id(database_id, HISTORY_DATABASE_ID):
+        raise NotionError(
+            f"Refusing to write relation property {name!r}",
+            database_id=database_id,
+        )
+    if set(value) != {"relation"}:
+        raise NotionError(
+            "Refusing to write relation property 'Machine' with extra fields",
+            database_id=database_id,
+        )
+    relation = value["relation"]
+    if (
+        not isinstance(relation, list)
+        or len(relation) != 1
+        or not isinstance(relation[0], dict)
+        or set(relation[0]) != {"id"}
+        or not str(relation[0].get("id") or "").strip()
+    ):
+        raise NotionError(
+            "Machine relation must contain exactly one page id",
+            database_id=database_id,
+        )
 
 
 class NotionClient:
@@ -180,7 +210,7 @@ class NotionClient:
         *,
         forbidden_database_ids: tuple[str, ...] = (),
     ) -> dict[str, Any]:
-        """Append one page. Refuses the source database and relation writes."""
+        """Append one page. Refuses protected databases and unlisted relations."""
 
         database_id = normalize_notion_id(database_id)
         for forbidden in forbidden_database_ids:
@@ -191,10 +221,7 @@ class NotionClient:
                 )
         for name, value in properties.items():
             if isinstance(value, dict) and "relation" in value:
-                raise NotionError(
-                    f"Refusing to write relation property {name!r}",
-                    database_id=database_id,
-                )
+                _require_allowed_relation(database_id, name, value)
         return self._request(
             "POST",
             "/v1/pages",

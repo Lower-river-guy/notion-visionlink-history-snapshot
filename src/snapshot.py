@@ -1,7 +1,8 @@
 """Copy Cat VisionLink into append-only Cat VisionLink History rows.
 
 The only write is creating a new history page. Previous snapshots are never
-updated. Machines and Works Manager relations are never written.
+updated. A new page may set the history Machine relation when exactly one
+Machines record has that Machine ID. Machines pages are never updated.
 """
 
 from __future__ import annotations
@@ -12,7 +13,12 @@ from datetime import datetime, timedelta
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
-from src.config import DESTINATION_DATABASE_TITLE, SCHEDULED_SLOTS, Config
+from src.config import (
+    DESTINATION_DATABASE_TITLE,
+    MACHINES_DATABASE_ID,
+    SCHEDULED_SLOTS,
+    Config,
+)
 from src.models import FieldMapping, HistoryDraft, SchemaPlan, SnapshotResult
 from src.notion_client import (
     NotionError,
@@ -46,10 +52,10 @@ DERIVED_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("Snapshot Run ID", "rich_text", "Stable id for this scheduled slot or manual execution"),
 )
 
-# Destination properties that point at Machines or Works Manager projects.
-# Setting them would write the other side of a two-way relation.
+# History relation written only from the Machines lookup, not from a source field.
+MACHINE_RELATION_PROPERTY = "Machine"
+# Setting this would write the project side of a two-way relation.
 NEVER_WRITE_DESTINATION = {
-    "Machine",
     "Related to Projects (VisionLink History)",
 }
 
@@ -262,6 +268,16 @@ def run_snapshot(
         )
         for page in source_pages
     ]
+    machine_index = _load_machine_index(
+        client,
+        config,
+        logger,
+        run_id,
+        destination_database_id=plan.destination_database_id,
+    )
+    _require_history_machine_relation(destination, config.machines_database_id)
+    for draft in drafts:
+        _attach_machine_relation(draft, machine_index)
 
     try:
         existing_machine_ids = _existing_machine_ids(client, plan.destination_database_id, run_id)
@@ -328,7 +344,10 @@ def run_snapshot(
             client.create_page(
                 plan.destination_database_id,
                 draft.properties,
-                forbidden_database_ids=(plan.source_database_id,),
+                forbidden_database_ids=(
+                    plan.source_database_id,
+                    config.machines_database_id,
+                ),
             )
         except NotionError as exc:
             failed += 1
@@ -373,6 +392,130 @@ def run_snapshot(
         writes_performed=created,
     )
     return result
+
+
+def build_machine_index(pages: list[dict[str, Any]]) -> tuple[dict[str, str], dict[str, list[str]]]:
+    """Map exact Machine ID title text to one Machines page id.
+
+    The live Machines property Machine ID is a title. Ids that appear on more
+    than one page are returned separately and are not linked.
+    """
+
+    found: dict[str, list[str]] = {}
+    for page in pages:
+        machine_id = _plain_text((page.get("properties") or {}).get("Machine ID"))
+        page_id = str(page.get("id") or "").strip()
+        if not machine_id or not page_id:
+            continue
+        found.setdefault(machine_id, []).append(page_id)
+    unique = {machine_id: ids[0] for machine_id, ids in found.items() if len(ids) == 1}
+    duplicates = {machine_id: ids for machine_id, ids in found.items() if len(ids) != 1}
+    return unique, duplicates
+
+
+def _load_machine_index(
+    client: Any,
+    config: Config,
+    logger: Logger,
+    run_id: str,
+    *,
+    destination_database_id: str,
+):
+    machines_id = normalize_notion_id(config.machines_database_id or MACHINES_DATABASE_ID)
+    if same_notion_id(machines_id, config.source_database_id):
+        raise SnapshotFatal(
+            "Machines database id matches the source database; refusing to continue",
+            database_role="machines",
+            database_id=machines_id,
+        )
+    if same_notion_id(machines_id, destination_database_id):
+        raise SnapshotFatal(
+            "Machines database id matches the history database; refusing to continue",
+            database_role="machines",
+            database_id=machines_id,
+        )
+    machines = _retrieve_role(client, "machines", machines_id)
+    title = database_title(machines)
+    if "Machines" not in title:
+        raise SnapshotFatal(
+            f"Machines database title {title!r} is not the Machines database",
+            database_role="machines",
+            database_id=machines_id,
+        )
+    machine_id_prop = (machines.get("properties") or {}).get("Machine ID")
+    actual_type = machine_id_prop.get("type") if isinstance(machine_id_prop, dict) else None
+    if actual_type != "title":
+        raise SnapshotFatal(
+            f"Machines property 'Machine ID' must be a title, found {actual_type}",
+            database_role="machines",
+            database_id=machines_id,
+        )
+    try:
+        pages = client.query_database(machines_id)
+    except NotionError as exc:
+        raise SnapshotFatal(
+            f"Cannot read Machines database {machines_id}: {exc}",
+            database_role="machines",
+            database_id=machines_id,
+        ) from exc
+    unique, duplicates = build_machine_index(pages)
+    if duplicates:
+        logger(
+            "WARNING",
+            "duplicate Machine IDs in Machines",
+            machineIds=sorted(duplicates),
+            pageIds={machine_id: duplicates[machine_id] for machine_id in sorted(duplicates)},
+            runId=run_id,
+        )
+    logger(
+        "INFO",
+        "machines lookup loaded",
+        machinesDatabaseId=machines_id,
+        uniqueMachineIds=len(unique),
+        duplicateMachineIds=len(duplicates),
+        runId=run_id,
+    )
+    return unique, duplicates
+
+
+def _require_history_machine_relation(destination: dict[str, Any], machines_database_id: str) -> None:
+    prop = (destination.get("properties") or {}).get(MACHINE_RELATION_PROPERTY)
+    actual = prop.get("type") if isinstance(prop, dict) else None
+    if actual != "relation":
+        raise SnapshotFatal(
+            f"History property 'Machine' must be a relation, found {actual}",
+            database_role="destination",
+            database_id=destination.get("id"),
+        )
+    related = (prop.get("relation") or {}).get("database_id") if isinstance(prop, dict) else None
+    if related and not same_notion_id(str(related), machines_database_id):
+        raise SnapshotFatal(
+            f"History Machine relation points at {related}, not the Machines database",
+            database_role="destination",
+            database_id=destination.get("id"),
+        )
+
+
+def _attach_machine_relation(
+    draft: HistoryDraft,
+    index: tuple[dict[str, str], dict[str, list[str]]],
+) -> None:
+    if draft.errors or not draft.machine_id:
+        return
+    unique, duplicates = index
+    if draft.machine_id in duplicates:
+        count = len(duplicates[draft.machine_id])
+        draft.errors.append(
+            f"Machine ID {draft.machine_id!r} matches {count} Machines records; not linking"
+        )
+        draft.failed_properties.append(MACHINE_RELATION_PROPERTY)
+        return
+    page_id = unique.get(draft.machine_id)
+    if not page_id:
+        draft.errors.append(f"Machine ID {draft.machine_id!r} has no Machines record")
+        draft.failed_properties.append(MACHINE_RELATION_PROPERTY)
+        return
+    draft.properties[MACHINE_RELATION_PROPERTY] = {"relation": [{"id": page_id}]}
 
 
 def build_schema_plan(source: dict[str, Any], destination: dict[str, Any]) -> SchemaPlan:
@@ -541,7 +684,11 @@ def build_schema_plan(source: dict[str, Any], destination: dict[str, Any]) -> Sc
     mapped_dest = {item.history_property for item in mappings}
     derived_dest = {name for name, _, _ in DERIVED_FIELDS}
     untouched = sorted(
-        name for name in dest_props if name not in mapped_dest and name not in derived_dest
+        name
+        for name in dest_props
+        if name not in mapped_dest
+        and name not in derived_dest
+        and name != MACHINE_RELATION_PROPERTY
     )
     for name in NEVER_WRITE_DESTINATION:
         if name in dest_props and name not in untouched:
@@ -981,6 +1128,12 @@ def _loggable_properties(properties: dict[str, Any]) -> dict[str, Any]:
             compact[name] = (value.get("select") or {}).get("name")
         elif "date" in value:
             compact[name] = value["date"]
+        elif "relation" in value:
+            compact[name] = [
+                item.get("id")
+                for item in value["relation"]
+                if isinstance(item, dict)
+            ]
         else:
             compact[name] = sorted(value.keys())
     return compact

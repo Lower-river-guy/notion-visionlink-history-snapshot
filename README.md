@@ -5,22 +5,26 @@ Cat VisionLink History. Each weekday snapshot answers questions such as where
 a machine was, which job it was on, what its hours were, and when VisionLink
 last reported, at a specific copy time.
 
-Version: `0.01.01`
+Version: `0.01.02`
 
 ## The only write path
 
 Read **Cat VisionLink** (database `3db284de-cb43-80ed-9b6f-fc20d6cc20eb`).
 Append new pages to **Cat VisionLink History** (looked up by exact title).
 
-This job does not update, archive, or delete anything. It does not write to
-Machines. It does not write to Works Manager Project List. It does not change
-the source database. It does not delete historical rows, including when a
-retry finds rows it already created.
+This job does not update, archive, or delete anything. It does not update
+Machines pages. It does not write to Works Manager Project List. It does not
+change the source database. It does not delete historical rows, including when
+a retry finds rows it already created.
 
-Relation properties are never written. That includes source **Assigned
-Contact** and **Works Manager Project**, and history **Machine** and
-**Related to Projects (VisionLink History)**. Those history relations are
-two-way, so setting them would change Machines or the project list.
+Each new history page sets **Machine** when Machines
+(`241a2acd-f833-410a-9c0a-99e376add55e`) has exactly one record whose
+**Machine ID** title equals the snapshot Machine ID. Notion fills **VisionLink
+History** on that Machines page because the relation is two-way. This job
+never edits the Machines page. It does not set **Related to Projects
+(VisionLink History)**. Source **Assigned Contact** and **Works Manager
+Project** are not copied. A missing or duplicate Machines match fails that
+record only.
 
 ## Snapshot Date and Last Reported
 

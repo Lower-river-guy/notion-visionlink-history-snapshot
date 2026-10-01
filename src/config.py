@@ -6,9 +6,10 @@ import os
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
-VERSION = "0.01.01"
+VERSION = "0.01.02"
 
 SOURCE_DATABASE_ID_DEFAULT = "3db284de-cb43-80ed-9b6f-fc20d6cc20eb"
+MACHINES_DATABASE_ID = "241a2acd-f833-410a-9c0a-99e376add55e"
 DESTINATION_DATABASE_TITLE = "Cat VisionLink History"
 BUSINESS_TIMEZONE = "America/Los_Angeles"
 SCHEDULED_SLOTS = ("10:00",)
@@ -31,6 +32,7 @@ class Config:
     notion_version: str
     version: str
     cloud_run_execution: str | None
+    machines_database_id: str = MACHINES_DATABASE_ID
 
     def __repr__(self) -> str:
         return (
@@ -44,6 +46,7 @@ class Config:
             f"snapshot_run_id={self.snapshot_run_id!r}, "
             f"business_timezone={self.business_timezone!r}, "
             f"cloud_run_execution={self.cloud_run_execution!r}, "
+            f"machines_database_id={self.machines_database_id!r}, "
             "notion_token='[redacted]')"
         )
 
@@ -98,4 +101,7 @@ def load_config(environ: dict[str, str] | None = None) -> Config:
         notion_version=_blank_to_none(env.get("NOTION_VERSION")) or "2022-06-28",
         version=VERSION,
         cloud_run_execution=_blank_to_none(env.get("CLOUD_RUN_EXECUTION")),
+        machines_database_id=(
+            _blank_to_none(env.get("MACHINES_DATABASE_ID")) or MACHINES_DATABASE_ID
+        ),
     )

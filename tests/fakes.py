@@ -6,10 +6,13 @@ from src.notion_client import NotionError, database_title
 
 
 class FakeNotion:
-    def __init__(self, source, destination, *, fail_creates_for=()):
+    def __init__(self, source, destination, *, machines=None, fail_creates_for=()):
+        from tests.notion_fixtures import machines_database
+
         self.source = source
         self.destination = destination
-        self.pages = {source["id"]: [], destination["id"]: []}
+        self.machines = machines or machines_database()
+        self.pages = {source["id"]: [], destination["id"]: [], self.machines["id"]: []}
         self.fail_creates_for = set(fail_creates_for)
         self.created = []
         self.write_calls = 0
@@ -19,6 +22,8 @@ class FakeNotion:
             return self.source
         if database_id == self.destination["id"]:
             return self.destination
+        if database_id == self.machines["id"]:
+            return self.machines
         raise NotionError(f"Cannot access database {database_id}", status_code=404, database_id=database_id)
 
     def search_databases_by_title(self, title):

@@ -73,11 +73,45 @@ def history_database():
             "Equipment Type": _select(["Dozer", "Scraper", "Excavator"]),
             "Snapshot Date": {"type": "date", "date": {}},
             "Snapshot Run ID": {"type": "rich_text", "rich_text": {}},
-            "Machine": {"type": "relation", "relation": {}},
+            "Machine": {
+                "type": "relation",
+                "relation": {"database_id": "241a2acd-f833-410a-9c0a-99e376add55e"},
+            },
             "Machine Series": {"type": "formula", "formula": {}},
             "Related to Projects (VisionLink History)": {"type": "relation", "relation": {}},
         },
     }
+
+
+def machines_database():
+    return {
+        "id": "241a2acd-f833-410a-9c0a-99e376add55e",
+        "title": [{"plain_text": "Machines"}],
+        "properties": {
+            "Machine ID": {"type": "title", "title": {}},
+            "VisionLink History": {"type": "relation", "relation": {}},
+        },
+    }
+
+
+def machine_page(machine_id, page_id=None):
+    return {
+        "id": page_id or f"machines-page-{machine_id}",
+        "properties": {
+            "Machine ID": {"type": "title", "title": [{"plain_text": machine_id}]},
+        },
+    }
+
+
+def seed_machines(fake, pages):
+    """Give each source page one Machines record with the same Machine ID."""
+
+    ids = []
+    for page in pages:
+        title = page["properties"]["Machine ID"]["title"]
+        if title:
+            ids.append(title[0]["plain_text"])
+    fake.pages[fake.machines["id"]] = [machine_page(machine_id) for machine_id in dict.fromkeys(ids)]
 
 
 def source_page(
