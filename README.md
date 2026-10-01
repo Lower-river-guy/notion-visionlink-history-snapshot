@@ -141,17 +141,20 @@ runner is not granted Owner or Editor.
 
 ## Continuous deploy
 
-Pushes run the test suite. When GitHub Actions has Google Cloud
-workload-identity secrets, or a Cloud Build trigger is connected,
-`.github/workflows/deploy-dry-run.yml` submits `cloudbuild.yaml`. That build
-updates this Cloud Run job and keeps `DRY_RUN=true` and
-`NOTION_TOKEN=Notion_Google_Cloud_Sync:latest`. It does not execute a
-production snapshot and does not create Cloud Scheduler. Merging to `main`
-does not enable writes.
+Pushes run the test suite. When the repository Actions secrets
+`GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_SERVICE_ACCOUNT` are set,
+`.github/workflows/deploy-dry-run.yml` authenticates with Workload Identity
+Federation as
+`github-visionlink-deployer@work-projects-486912.iam.gserviceaccount.com`
+and submits `cloudbuild.yaml`. That build updates this Cloud Run job and keeps
+`DRY_RUN=true` and `NOTION_TOKEN=Notion_Google_Cloud_Sync:latest`. It does
+not execute a production snapshot and does not create Cloud Scheduler.
+Merging to `main` does not enable writes.
 
-The one-time Cloud Build GitHub connection is documented in
-`.github/workflows/deploy-dry-run.yml`. Later revisions do not need a manual
-Cloud Shell deploy.
+The runtime account is not the GitHub deployment identity. One-time setup is
+`deploy/bootstrap-gcp-auth.sh`. It does not deploy the application. The
+desired schedule remains 10:00 AM America/Los_Angeles, Monday–Friday, cron
+`0 10 * * 1-5`, and is not created by that script.
 
 `DESTINATION_DATABASE_ID` is `0357c6bd-2650-4dfc-affb-72430beaca84`, the
 history database found via the Notion API. Every run still checks that its
@@ -199,6 +202,7 @@ src/snapshot.py        mapping, run id, dry run
 src/models.py          result and mapping records
 tests/                 unit tests
 deploy/deploy-dry-run.sh
+deploy/bootstrap-gcp-auth.sh
 deploy/assert_job_config.py
 cloudbuild.yaml
 .github/workflows/deploy-dry-run.yml

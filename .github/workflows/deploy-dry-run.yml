@@ -1,59 +1,27 @@
 # Tests on every push and pull request.
 #
-# A push to main or cursor/visionlink-history-snapshot-3dab also submits
-# cloudbuild.yaml when GitHub Actions workload-identity secrets exist. That
-# build updates Cloud Run job notion-visionlink-history-snapshot and keeps:
+# A push to main or cursor/visionlink-history-snapshot-3dab submits
+# cloudbuild.yaml when these repository Actions secrets exist:
+#
+#   GCP_WORKLOAD_IDENTITY_PROVIDER=projects/564809734796/locations/global/workloadIdentityPools/github-visionlink/providers/github
+#   GCP_SERVICE_ACCOUNT=github-visionlink-deployer@work-projects-486912.iam.gserviceaccount.com
+#
+# GitHub authenticates with Workload Identity Federation and impersonates
+# github-visionlink-deployer. The runtime account
+# visionlink-history-runner@work-projects-486912.iam.gserviceaccount.com
+# is not the deployment identity.
+#
+# The build updates Cloud Run job notion-visionlink-history-snapshot and keeps:
 #
 #   NOTION_TOKEN=Notion_Google_Cloud_Sync:latest
 #   DRY_RUN=true
-#   runner visionlink-history-runner@work-projects-486912.iam.gserviceaccount.com
 #
-# It does not set DRY_RUN=false, does not execute a production snapshot, and
-# does not create Cloud Scheduler. Merging to main does not enable writes.
+# It does not set DRY_RUN=false, does not execute the job, and does not create
+# Cloud Scheduler. The desired schedule remains 10:00 AM America/Los_Angeles,
+# Monday-Friday, cron 0 10 * * 1-5, and stays undeployed.
 #
-# One-time connection, only if no trigger and no workload-identity secrets
-# exist yet. Pushing this workflow cannot create either one when this
-# repository token cannot administer GitHub secrets or Google Cloud.
-#
-# 1. In Google Cloud Console, connect Lower-river-guy/notion-visionlink-history-snapshot
-#    to Cloud Build once (Cloud Build GitHub App). That authorization click
-#    is not available from git push.
-# 2. Grant only the Cloud Build service account that already works in
-#    work-projects-486912. Domain: @cloudbuild.gserviceaccount.com.
-#    Do not use @cloudservices.gserviceaccount.com.
-#
-#    PROJECT=work-projects-486912
-#    PROJECT_NUMBER="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')"
-#    BUILD_SA="${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
-#    RUNNER="visionlink-history-runner@${PROJECT}.iam.gserviceaccount.com"
-#    gcloud projects add-iam-policy-binding "$PROJECT" \
-#      --member="serviceAccount:${BUILD_SA}" --role="roles/run.developer"
-#    gcloud projects add-iam-policy-binding "$PROJECT" \
-#      --member="serviceAccount:${BUILD_SA}" --role="roles/artifactregistry.writer"
-#    gcloud iam service-accounts add-iam-policy-binding "$RUNNER" \
-#      --project="$PROJECT" --member="serviceAccount:${BUILD_SA}" \
-#      --role="roles/iam.serviceAccountUser"
-#
-# 3. After the GitHub App is connected, create the trigger once:
-#
-#    gcloud builds triggers create github \
-#      --project=work-projects-486912 \
-#      --name=notion-visionlink-history-snapshot-dry-run \
-#      --repo-owner=Lower-river-guy \
-#      --repo-name=notion-visionlink-history-snapshot \
-#      --branch-pattern='^(main|cursor/visionlink-history-snapshot-3dab)$' \
-#      --build-config=cloudbuild.yaml
-#
-#    Do not add a substitution that changes _DRY_RUN.
-#
-# Alternative to the trigger: store these GitHub Actions secrets (not the
-# Notion token) and this workflow submits the same cloudbuild.yaml:
-#
-#   GCP_WORKLOAD_IDENTITY_PROVIDER
-#   GCP_SERVICE_ACCOUNT
-#
-# The Cloud Build service account above is the identity that should deploy.
-# Do not grant the runner Owner or Editor.
+# One-time setup, from an authenticated gcloud session:
+#   bash deploy/bootstrap-gcp-auth.sh
 
 name: dry-run deploy
 
@@ -99,7 +67,7 @@ jobs:
             echo "available=false" >> "$GITHUB_OUTPUT"
             echo "Cloud Build was not submitted from GitHub Actions."
             echo "GCP_WORKLOAD_IDENTITY_PROVIDER or GCP_SERVICE_ACCOUNT is unset."
-            echo "One-time Cloud Build trigger setup is in this workflow file."
+            echo "Run deploy/bootstrap-gcp-auth.sh once, then store the printed values as those Actions secrets."
           fi
       - name: Authenticate to Google Cloud
         if: steps.creds.outputs.available == 'true'
@@ -112,4 +80,4 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
       - name: Submit dry-run Cloud Build
         if: steps.creds.outputs.available == 'true'
-        run: gcloud builds submit --config cloudbuild.yaml --project work-projects-486912
+        run: gcloud builds submit --config cloudbuild.yaml --project work-projects-486912 --service-account "projects/work-projects-486912/serviceAccounts/github-visionlink-deployer@work-projects-486912.iam.gserviceaccount.com"

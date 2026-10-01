@@ -158,7 +158,9 @@ def test_deploy_files_keep_live_mapping():
         assert "service-accounts create" not in text
 
     assert "@cloudbuild.gserviceaccount.com" in script
-    assert "@cloudbuild.gserviceaccount.com" in workflow
+    assert "github-visionlink-deployer@work-projects-486912.iam.gserviceaccount.com" in workflow
+    assert "google-github-actions/auth@v2" in workflow
+    assert "id-token: write" in workflow
     assert "developer.gserviceaccount.com" not in script
     assert "_DRY_RUN: \"false\"" not in build
     assert "_DRY_RUN=false" not in workflow
@@ -173,3 +175,30 @@ def test_deploy_files_keep_live_mapping():
 
     assert 'env.get("NOTION_TOKEN")' in config
     assert "Notion_Google_Cloud_Sync" not in config
+
+
+def test_bootstrap_wif_is_repository_scoped_and_does_not_deploy():
+    script = (ROOT / "deploy" / "bootstrap-gcp-auth.sh").read_text()
+    provider = (
+        "projects/564809734796/locations/global/workloadIdentityPools/"
+        "github-visionlink/providers/github"
+    )
+    deployer = "github-visionlink-deployer@work-projects-486912.iam.gserviceaccount.com"
+    runner = "visionlink-history-runner@work-projects-486912.iam.gserviceaccount.com"
+    assert "GCP_WORKLOAD_IDENTITY_PROVIDER=" in script
+    assert provider in script or "providers/${PROVIDER}" in script
+    assert deployer in script or 'DEPLOYER_NAME="github-visionlink-deployer"' in script
+    assert runner in script
+    assert "assertion.repository=='Lower-river-guy/notion-visionlink-history-snapshot'" in script
+    assert "attribute.repository/${REPO}" in script
+    assert "roles/iam.workloadIdentityUser" in script
+    assert "roles/iam.serviceAccountUser" in script
+    assert "roles/run.developer" in script
+    assert "roles/cloudbuild.builds.editor" in script
+    assert "roles/owner" not in script
+    assert "roles/editor" not in script
+    assert "keys create" not in script
+    assert "gcloud scheduler jobs" not in script
+    assert "gcloud run jobs" not in script
+    assert "DRY_RUN=false" not in script
+    assert "attribute.repository_owner/" not in script
