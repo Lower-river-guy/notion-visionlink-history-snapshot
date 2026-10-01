@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
-VERSION = "0.01.00"
+VERSION = "0.01.01"
 
 SOURCE_DATABASE_ID_DEFAULT = "3db284de-cb43-80ed-9b6f-fc20d6cc20eb"
 DESTINATION_DATABASE_TITLE = "Cat VisionLink History"

@@ -5,7 +5,7 @@ Cat VisionLink History. Each weekday snapshot answers questions such as where
 a machine was, which job it was on, what its hours were, and when VisionLink
 last reported, at a specific copy time.
 
-Version: `0.01.00`
+Version: `0.01.01`
 
 ## The only write path
 

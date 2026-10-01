@@ -86,6 +86,7 @@ def source_page(
     hours=10.5,
     location="Yard",
     last_reported="2026-09-30T08:02:00.000Z",
+    last_reported_time_zone=None,
     map_url="https://www.google.com/maps/search/?api=1&query=34.12243,-117.34482",
     status="Asset Off",
     equipment_type=None,
@@ -120,6 +121,10 @@ def source_page(
         if last_reported is not None:
             properties["Last Reported"] = {
                 "type": "date",
-                "date": {"start": last_reported, "end": None, "time_zone": None},
+                "date": {
+                    "start": last_reported,
+                    "end": None,
+                    "time_zone": last_reported_time_zone,
+                },
             }
     return {"id": f"src-{machine_id}", "properties": properties}
