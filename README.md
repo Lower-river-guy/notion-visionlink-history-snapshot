@@ -62,23 +62,24 @@ Run id rules:
    civil timestamp. Local retries are stable only when `SNAPSHOT_RUN_ID` or
    `CLOUD_RUN_EXECUTION` is set.
 
-Cloud Scheduler is split into two jobs so each invocation passes its own
-`SNAPSHOT_SLOT`. A single cron cannot attach a different slot to 6:00 AM and
-2:00 PM. Task retries are capped (`--max-retries=3`) so a failed attempt
+When a scheduler is added later, use two jobs so each invocation passes its
+own `SNAPSHOT_SLOT`. A single cron cannot attach a different slot to 6:00 AM
+and 2:00 PM. Task retries are capped (`--max-retries=3`) so a failed attempt
 cannot run long enough to adopt the next day's slot id.
+`deploy/deploy-dry-run.sh` does not create those scheduler jobs.
 
 ## Schedule
 
-Twice each weekday, America/Los_Angeles:
+Future schedule, not created by this deploy:
 
-- 6:00 AM, `SNAPSHOT_SLOT=06:00`
-- 2:00 PM, `SNAPSHOT_SLOT=14:00`
+- 6:00 AM America/Los_Angeles, `SNAPSHOT_SLOT=06:00`
+- 2:00 PM America/Los_Angeles, `SNAPSHOT_SLOT=14:00`
 
-Equivalent cron: `0 6,14 * * 1-5`. The scheduler timezone is
-`America/Los_Angeles`, not a fixed offset.
+Equivalent cron: `0 6,14 * * 1-5` with time zone `America/Los_Angeles`
+(not a fixed UTC offset).
 
-The scheduler is created only after a production `DRY_RUN=true` execution is
-clean. Until then it stays uncreated.
+Do not create or enable Cloud Scheduler from this repository's deploy script.
+The first Cloud Run revision stays `DRY_RUN=true`.
 
 ## Dry run
 
@@ -92,8 +93,9 @@ export DRY_RUN=true
 python -m src.main
 ```
 
-The job's deployed default is `DRY_RUN=false`. A dry-run execution overrides
-that variable for one execution only.
+The Cloud Run job is deployed with `DRY_RUN=true` and the deploy script never
+changes it to `false`. A local process still treats an unset `DRY_RUN` as
+false, so set `DRY_RUN=true` before any local run.
 
 ## Tests
 
@@ -107,44 +109,33 @@ python -m pytest
 Project `work-projects-486912`, region `us-west1`, job
 `notion-visionlink-history-snapshot`.
 
-The Notion integration token lives in Secret Manager as `NOTION_TOKEN`. It is
-mounted as an environment variable. It is not stored in source, the
-Dockerfile, logs, or git.
-
-Runtime service account `notion-visionlink-history-snapshot` gets Secret
-Manager accessor on that secret and log writing. A separate scheduler service
-account receives `run.jobs.run` on this job only.
+Requires an active `gcloud` account that can administer this project. The
+script deploys `DRY_RUN=true`, runs the job once, and stops. It does not set
+`DRY_RUN=false`, does not write Notion pages, and does not create Cloud
+Scheduler.
 
 ```bash
-gcloud config set project work-projects-486912
-
-# Deploy with DRY_RUN=true. Do not flip it to false until a dry run is clean.
-gcloud run jobs deploy notion-visionlink-history-snapshot \
-  --source . \
-  --region us-west1 \
-  --service-account notion-visionlink-history-snapshot@work-projects-486912.iam.gserviceaccount.com \
-  --set-secrets NOTION_TOKEN=NOTION_TOKEN:latest \
-  --set-env-vars ^@^DRY_RUN=true@SOURCE_DATABASE_ID=3db284de-cb43-80ed-9b6f-fc20d6cc20eb@DESTINATION_DATABASE_TITLE=Cat VisionLink History@DESTINATION_DATABASE_ID=0357c6bd-2650-4dfc-affb-72430beaca84@BUSINESS_TIMEZONE=America/Los_Angeles \
-  --tasks 1 \
-  --parallelism 1 \
-  --max-retries 3 \
-  --task-timeout 1800 \
-  --memory 512Mi \
-  --cpu 1
-
-gcloud run jobs execute notion-visionlink-history-snapshot \
-  --region us-west1 \
-  --wait
+deploy/deploy-dry-run.sh
 ```
 
-`DESTINATION_DATABASE_ID` is the history database found via the Notion API.
-Every run still checks that its title is exactly `Cat VisionLink History`.
+The Notion integration token must already exist in Secret Manager as
+`NOTION_TOKEN`. The script refuses to create a replacement and never prints
+the secret value. The token is mounted into the job as an environment
+variable. It is not stored in source, the Dockerfile, logs, or git.
 
-Create the two weekday triggers only when the dry run accessed both
-databases, mappings validated, failed count was 0, and writes performed was
-0. At that point set the job's `DRY_RUN` to `false` and create the scheduler.
-If the dry run is not clean, leave `DRY_RUN=true` and do not create the
-scheduler.
+Runtime service account `notion-visionlink-history-runner` receives only:
+
+- `roles/secretmanager.secretAccessor` on secret `NOTION_TOKEN`
+- `roles/logging.logWriter` on the project
+- `roles/run.invoker` on this Cloud Run job
+
+The deploying principal and the Cloud Build service account receive
+`roles/iam.serviceAccountUser` on that runner so they can deploy the job as
+it. The runner is not granted Owner or Editor.
+
+`DESTINATION_DATABASE_ID` is `0357c6bd-2650-4dfc-affb-72430beaca84`, the
+history database found via the Notion API. Every run still checks that its
+title is exactly `Cat VisionLink History`.
 
 ## Configuration
 
@@ -187,5 +178,6 @@ src/notion_client.py   pagination, retries, write guards
 src/snapshot.py        mapping, run id, dry run
 src/models.py          result and mapping records
 tests/                 unit tests
+deploy/deploy-dry-run.sh
 Dockerfile             Python 3.12
 ```
