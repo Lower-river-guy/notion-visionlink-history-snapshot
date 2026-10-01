@@ -202,3 +202,23 @@ def test_bootstrap_wif_is_repository_scoped_and_does_not_deploy():
     assert "gcloud run jobs" not in script
     assert "DRY_RUN=false" not in script
     assert "attribute.repository_owner/" not in script
+    assert 'POOL="github-visionlink"' in script
+    assert 'PROVIDER="github"' in script
+    assert 'DEPLOYER_NAME="github-visionlink-deployer"' in script
+    assert 'SCHEDULER_ROLE="visionlinkHistorySchedulerDeployer"' in script
+    assert "service-accounts describe" in script
+    assert "workload-identity-pools update" in script
+    assert "GitHub VisionLink history snapshot" not in script
+
+    names = {
+        'POOL_DISPLAY_NAME="VisionLink GitHub"': 32,
+        'PROVIDER_DISPLAY_NAME="GitHub Actions"': 32,
+        'DEPLOYER_DISPLAY_NAME="GitHub Actions deployer for VisionLink history snapshot"': 100,
+        'SCHEDULER_ROLE_TITLE="VisionLink history scheduler deploy"': 100,
+        'SCHEDULER_ROLE_DESCRIPTION="Create and update Cloud Scheduler jobs for the VisionLink history snapshot. Does not run or delete them."': 256,
+        'AR_DESCRIPTION="Images for notion-visionlink-history-snapshot"': 256,
+    }
+    for assignment, limit in names.items():
+        assert assignment in script
+        value = assignment.split('="', 1)[1][:-1]
+        assert len(value) <= limit

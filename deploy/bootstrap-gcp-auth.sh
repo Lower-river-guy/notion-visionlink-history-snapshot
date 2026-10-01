@@ -24,6 +24,54 @@ AR_LOCATION="us-west1"
 AR_REPO="cloud-run-source-deploy"
 GITHUB_REPO="Lower-river-guy/notion-visionlink-history-snapshot"
 
+# Display names only. Resource IDs above stay as-is.
+# Limits: pool <=32, provider <=32, service account <=100,
+# custom role title <=100, custom role description <=256,
+# Artifact Registry description <=256.
+POOL_DISPLAY_NAME="VisionLink GitHub"
+PROVIDER_DISPLAY_NAME="GitHub Actions"
+DEPLOYER_DISPLAY_NAME="GitHub Actions deployer for VisionLink history snapshot"
+SCHEDULER_ROLE_TITLE="VisionLink history scheduler deploy"
+SCHEDULER_ROLE_DESCRIPTION="Create and update Cloud Scheduler jobs for the VisionLink history snapshot. Does not run or delete them."
+AR_DESCRIPTION="Images for notion-visionlink-history-snapshot"
+
+require_max_length() {
+  local label="$1"
+  local value="$2"
+  local limit="$3"
+  local length="${#value}"
+  if (( length > limit )); then
+    echo "ERROR: ${label} is ${length} characters; GCP allows at most ${limit}." >&2
+    exit 1
+  fi
+}
+
+require_max_length "Workload Identity Pool display name" "${POOL_DISPLAY_NAME}" 32
+require_max_length "Workload Identity Provider display name" "${PROVIDER_DISPLAY_NAME}" 32
+require_max_length "Deployer service account display name" "${DEPLOYER_DISPLAY_NAME}" 100
+require_max_length "Custom role title" "${SCHEDULER_ROLE_TITLE}" 100
+require_max_length "Custom role description" "${SCHEDULER_ROLE_DESCRIPTION}" 256
+require_max_length "Artifact Registry description" "${AR_DESCRIPTION}" 256
+
+# IDs are already valid, so they are not renamed to shorten a display name.
+# Pool and provider: 4-32 chars, start with a letter, end with a letter or digit.
+# Service account id: 6-30 chars, same character rules.
+# Custom role id: 3-64 letters, digits, underscores, or periods.
+require_id() {
+  local label="$1"
+  local value="$2"
+  local pattern="$3"
+  if [[ ! "${value}" =~ ${pattern} ]]; then
+    echo "ERROR: ${label} '${value}' is not a valid GCP id." >&2
+    exit 1
+  fi
+}
+
+require_id "Workload Identity Pool id" "${POOL}" '^[a-z][a-z0-9-]{2,30}[a-z0-9]$'
+require_id "Workload Identity Provider id" "${PROVIDER}" '^[a-z][a-z0-9-]{2,30}[a-z0-9]$'
+require_id "Deployer service account id" "${DEPLOYER_NAME}" '^[a-z][a-z0-9-]{4,28}[a-z0-9]$'
+require_id "Custom role id" "${SCHEDULER_ROLE}" '^[a-zA-Z][a-zA-Z0-9_.]{2,63}$'
+
 if [[ "$#" -gt 0 ]]; then
   echo "ERROR: This script takes no arguments. It only configures Workload Identity Federation." >&2
   exit 1
@@ -85,7 +133,9 @@ fi
 if ! "${GCLOUD}" iam service-accounts describe "${DEPLOYER}" --project="${PROJECT}" >/dev/null 2>&1; then
   "${GCLOUD}" iam service-accounts create "${DEPLOYER_NAME}" \
     --project="${PROJECT}" \
-    --display-name="GitHub Actions deployer for VisionLink history snapshot"
+    --display-name="${DEPLOYER_DISPLAY_NAME}"
+else
+  echo "Reusing deployer service account ${DEPLOYER}"
 fi
 
 if ! "${GCLOUD}" iam workload-identity-pools describe "${POOL}" \
@@ -94,7 +144,13 @@ if ! "${GCLOUD}" iam workload-identity-pools describe "${POOL}" \
   "${GCLOUD}" iam workload-identity-pools create "${POOL}" \
     --project="${PROJECT}" \
     --location=global \
-    --display-name="GitHub VisionLink history snapshot"
+    --display-name="${POOL_DISPLAY_NAME}"
+else
+  echo "Reusing Workload Identity Pool ${POOL}"
+  "${GCLOUD}" iam workload-identity-pools update "${POOL}" \
+    --project="${PROJECT}" \
+    --location=global \
+    --display-name="${POOL_DISPLAY_NAME}"
 fi
 
 ATTRIBUTE_CONDITION="assertion.repository=='Lower-river-guy/notion-visionlink-history-snapshot'"
@@ -107,16 +163,17 @@ if ! "${GCLOUD}" iam workload-identity-pools providers describe "${PROVIDER}" \
     --project="${PROJECT}" \
     --location=global \
     --workload-identity-pool="${POOL}" \
-    --display-name="GitHub Actions" \
+    --display-name="${PROVIDER_DISPLAY_NAME}" \
     --issuer-uri="https://token.actions.githubusercontent.com" \
     --attribute-mapping="${ATTRIBUTE_MAPPING}" \
     --attribute-condition="${ATTRIBUTE_CONDITION}"
 else
+  echo "Reusing Workload Identity Provider ${PROVIDER}"
   "${GCLOUD}" iam workload-identity-pools providers update-oidc "${PROVIDER}" \
     --project="${PROJECT}" \
     --location=global \
     --workload-identity-pool="${POOL}" \
-    --display-name="GitHub Actions" \
+    --display-name="${PROVIDER_DISPLAY_NAME}" \
     --issuer-uri="https://token.actions.githubusercontent.com" \
     --attribute-mapping="${ATTRIBUTE_MAPPING}" \
     --attribute-condition="${ATTRIBUTE_CONDITION}"
@@ -170,17 +227,18 @@ done
 
 SCHEDULER_PERMISSIONS="cloudscheduler.jobs.create,cloudscheduler.jobs.get,cloudscheduler.jobs.list,cloudscheduler.jobs.update,cloudscheduler.locations.get,cloudscheduler.locations.list"
 if "${GCLOUD}" iam roles describe "${SCHEDULER_ROLE}" --project="${PROJECT}" >/dev/null 2>&1; then
+  echo "Reusing custom role ${SCHEDULER_ROLE}"
   "${GCLOUD}" iam roles update "${SCHEDULER_ROLE}" \
     --project="${PROJECT}" \
-    --title="VisionLink history scheduler deploy" \
-    --description="Create and update Cloud Scheduler jobs for the VisionLink history snapshot. Does not run or delete them." \
+    --title="${SCHEDULER_ROLE_TITLE}" \
+    --description="${SCHEDULER_ROLE_DESCRIPTION}" \
     --permissions="${SCHEDULER_PERMISSIONS}" \
     --stage=GA >/dev/null
 else
   "${GCLOUD}" iam roles create "${SCHEDULER_ROLE}" \
     --project="${PROJECT}" \
-    --title="VisionLink history scheduler deploy" \
-    --description="Create and update Cloud Scheduler jobs for the VisionLink history snapshot. Does not run or delete them." \
+    --title="${SCHEDULER_ROLE_TITLE}" \
+    --description="${SCHEDULER_ROLE_DESCRIPTION}" \
     --permissions="${SCHEDULER_PERMISSIONS}" \
     --stage=GA >/dev/null
 fi
@@ -196,7 +254,7 @@ if ! "${GCLOUD}" artifacts repositories describe "${AR_REPO}" \
     --repository-format=docker \
     --location="${AR_LOCATION}" \
     --project="${PROJECT}" \
-    --description="Images for notion-visionlink-history-snapshot"
+    --description="${AR_DESCRIPTION}"
 fi
 
 PROVIDER_RESOURCE="projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${POOL}/providers/${PROVIDER}"
