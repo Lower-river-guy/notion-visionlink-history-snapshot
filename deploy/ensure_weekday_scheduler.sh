@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Create or update the one weekday 10:00 AM Pacific scheduler.
 #
-# The Cloud Run job template stays DRY_RUN=true. Cloud Scheduler calls the
+# The Cloud Run job template is DRY_RUN=false. Cloud Scheduler still calls the
 # Cloud Run jobs.run API with an execution override of DRY_RUN=false and
 # SNAPSHOT_SLOT=10:00. This script does not execute the job and does not
 # call Cloud Scheduler's run command.

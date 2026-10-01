@@ -80,10 +80,10 @@ One Cloud Scheduler job, `notion-visionlink-history-weekday-10am`:
 - Target: Cloud Run job `notion-visionlink-history-snapshot` in `us-west1`
 - Execution override: `DRY_RUN=false` and `SNAPSHOT_SLOT=10:00`
 
-The Cloud Run job template stays `DRY_RUN=true` with `SNAPSHOT_SLOT` unset, so
-a manual run and `.github/workflows/diagnostic-run.yml` still see a dry-run
-job at rest. Cloud Run merges the override into that execution only. There is
-no second Cloud Run job and no other VisionLink history schedule.
+The Cloud Run job template is `DRY_RUN=false` with `SNAPSHOT_SLOT` unset.
+Cloud Run merges the scheduler override into that execution only, so the
+weekday run still sets `SNAPSHOT_SLOT=10:00` and states `DRY_RUN=false`.
+There is no second Cloud Run job and no other VisionLink history schedule.
 
 The scheduler authenticates as
 `github-visionlink-deployer@work-projects-486912.iam.gserviceaccount.com`.
@@ -105,9 +105,9 @@ export DRY_RUN=true
 python -m src.main
 ```
 
-The Cloud Run job is deployed with `DRY_RUN=true` and the deploy script never
-changes it to `false`. A local process still treats an unset `DRY_RUN` as
-false, so set `DRY_RUN=true` before any local run.
+The Cloud Run job is deployed with `DRY_RUN=false`. A local process treats an
+unset `DRY_RUN` as false, so set `DRY_RUN=true` before any local run that
+must not write.
 
 ## Tests
 
@@ -122,9 +122,9 @@ Project `work-projects-486912`, region `us-west1`, job
 `notion-visionlink-history-snapshot`.
 
 Requires an active `gcloud` account that can administer this project. The
-script deploys `DRY_RUN=true`, runs the job once, and stops. It does not set
-`DRY_RUN=false`, does not write Notion pages, and does not create Cloud
-Scheduler.
+script deploys `DRY_RUN=false` and does not execute the job. It does not
+create Cloud Scheduler. GitHub Actions deploy is the path that updates the
+live job.
 
 ```bash
 deploy/deploy-dry-run.sh
@@ -163,11 +163,11 @@ Pushes run the test suite. When the repository Actions secrets
 Federation as
 `github-visionlink-deployer@work-projects-486912.iam.gserviceaccount.com`
 and submits `cloudbuild.yaml`. That build updates this Cloud Run job and keeps
-`DRY_RUN=true` and `NOTION_TOKEN=Notion_Google_Cloud_Sync:latest`. It does
-not execute a production snapshot. The same workflow then runs
+`DRY_RUN=false` and `NOTION_TOKEN=Notion_Google_Cloud_Sync:latest`. It does
+not execute the job. The same workflow then runs
 `deploy/ensure_weekday_scheduler.sh`, which creates or updates the one
 weekday 10:00 AM Pacific scheduler. A scheduled execution overrides
-`DRY_RUN` to `false`. The resting job stays `DRY_RUN=true`.
+`DRY_RUN=false` and `SNAPSHOT_SLOT=10:00`. The resting job is `DRY_RUN=false`.
 
 The runtime account is not the GitHub deployment identity. One-time setup is
 `deploy/bootstrap-gcp-auth.sh`. It does not deploy the application and does

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Deploy the VisionLink history snapshot Cloud Run job and run it once.
+# Deploy the VisionLink history snapshot Cloud Run job and leave it at rest.
 #
-# This script always deploys DRY_RUN=true. It does not set DRY_RUN=false,
-# does not create Cloud Scheduler, and does not print secret values.
+# This script deploys DRY_RUN=false. It does not execute the job, does not
+# create Cloud Scheduler, and does not print secret values.
 #
 # Application environment variable: NOTION_TOKEN
 # Secret Manager secret:            Notion_Google_Cloud_Sync
@@ -31,25 +31,25 @@ if [[ "${1:-}" == "--help" ]]; then
   cat <<EOF
 Usage: deploy/deploy-dry-run.sh
 
-Deploys ${JOB} in ${PROJECT} / ${REGION} with DRY_RUN=true, executes it once,
-and prints redacted logs. Requires an active gcloud account.
+Deploys ${JOB} in ${PROJECT} / ${REGION} with DRY_RUN=false and does not
+execute it. Requires an active gcloud account.
 
 Mounts Secret Manager ${SECRET_RESOURCE} as NOTION_TOKEN
 (NOTION_TOKEN=${SECRET_RESOURCE}:latest).
 
-Does not set DRY_RUN=false and does not create Cloud Scheduler.
+Does not create Cloud Scheduler.
 Does not create a service account. The runner ${SA_EMAIL} must already exist.
 EOF
   exit 0
 fi
 
 if [[ "$#" -gt 0 ]]; then
-  echo "ERROR: This script takes no arguments. It only deploys DRY_RUN=true." >&2
+  echo "ERROR: This script takes no arguments. It deploys DRY_RUN=false." >&2
   exit 1
 fi
 
-if [[ "${DRY_RUN:-true}" != "true" ]]; then
-  echo "ERROR: Refusing to deploy because DRY_RUN=${DRY_RUN}. This script only deploys DRY_RUN=true." >&2
+if [[ "${DRY_RUN:-false}" != "false" ]]; then
+  echo "ERROR: Refusing to deploy because DRY_RUN=${DRY_RUN}. This script deploys the resting job with DRY_RUN=false." >&2
   exit 1
 fi
 
@@ -80,7 +80,7 @@ if [[ -z "${ACTIVE_ACCOUNT}" ]]; then
   exit 1
 fi
 
-echo "Deploying ${JOB} as ${ACTIVE_ACCOUNT} with DRY_RUN=true"
+echo "Deploying ${JOB} as ${ACTIVE_ACCOUNT} with DRY_RUN=false"
 echo "Secret mapping: NOTION_TOKEN=${SECRET_RESOURCE}:latest"
 "${GCLOUD}" config set project "${PROJECT}" >/dev/null
 
@@ -146,7 +146,7 @@ BUILD_SA="${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
   --role="roles/artifactregistry.writer" \
   --quiet >/dev/null
 
-ENV_VARS="^@^DRY_RUN=true@SOURCE_DATABASE_ID=${SOURCE_DATABASE_ID}@DESTINATION_DATABASE_TITLE=${DESTINATION_TITLE}@DESTINATION_DATABASE_ID=${DESTINATION_DATABASE_ID}@BUSINESS_TIMEZONE=America/Los_Angeles"
+ENV_VARS="^@^DRY_RUN=false@SOURCE_DATABASE_ID=${SOURCE_DATABASE_ID}@DESTINATION_DATABASE_TITLE=${DESTINATION_TITLE}@DESTINATION_DATABASE_ID=${DESTINATION_DATABASE_ID}@BUSINESS_TIMEZONE=America/Los_Angeles"
 
 "${GCLOUD}" run jobs deploy "${JOB}" \
   --project="${PROJECT}" \
@@ -169,52 +169,12 @@ ENV_VARS="^@^DRY_RUN=true@SOURCE_DATABASE_ID=${SOURCE_DATABASE_ID}@DESTINATION_D
   --role="roles/run.invoker" \
   --quiet >/dev/null
 
-assert_dry_run() {
-  local phase="$1"
-  echo "Checking job configuration (${phase})"
-  "${GCLOUD}" run jobs describe "${JOB}" \
-    --project="${PROJECT}" \
-    --region="${REGION}" \
-    --format=json \
-    | python3 "${ROOT}/deploy/assert_job_config.py"
-}
-
-assert_dry_run "before execute"
-
-EXECUTION_NAME="$("${GCLOUD}" run jobs execute "${JOB}" \
+echo "Checking job configuration"
+"${GCLOUD}" run jobs describe "${JOB}" \
   --project="${PROJECT}" \
   --region="${REGION}" \
-  --wait \
-  --format='value(metadata.name)')"
-
-assert_dry_run "after execute"
-
-echo "Execution: ${EXECUTION_NAME}"
-echo "Fetching logs. Secret-like strings are redacted."
-
-"${GCLOUD}" logging read \
-  "resource.type=\"cloud_run_job\" AND resource.labels.job_name=\"${JOB}\" AND labels.\"run.googleapis.com/execution_name\"=\"${EXECUTION_NAME}\"" \
-  --project="${PROJECT}" \
-  --freshness=6h \
-  --limit=1000 \
   --format=json \
-  | python3 -c '
-import json, re, sys
-secret = re.compile(r"(?i)(bearer\s+)\S+|((?:secret_|ntn_)[A-Za-z0-9_\-]+)")
-def redact(value):
-    if isinstance(value, str):
-        return secret.sub(lambda m: (m.group(1) or "") + "[redacted]" if m.group(1) else "[redacted]", value)
-    if isinstance(value, list):
-        return [redact(item) for item in value]
-    if isinstance(value, dict):
-        return {key: redact(item) for key, item in value.items()}
-    return value
-entries = json.load(sys.stdin)
-for entry in reversed(entries):
-    payload = entry.get("jsonPayload") or entry.get("textPayload") or ""
-    print(json.dumps(redact(payload), ensure_ascii=False))
-'
+  | python3 "${ROOT}/deploy/assert_job_config.py"
 
 echo
-echo "Stopped after one dry run."
-echo "DRY_RUN remains true. Cloud Scheduler was not created. No production Notion writes were enabled."
+echo "Deployed DRY_RUN=false. Did not execute the job. Cloud Scheduler was not created."

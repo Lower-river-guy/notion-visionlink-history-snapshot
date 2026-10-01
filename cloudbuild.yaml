@@ -1,4 +1,4 @@
-# Update the existing Cloud Run job and keep it a dry run.
+# Update the existing Cloud Run job. The resting template is DRY_RUN=false.
 #
 # Application env var: NOTION_TOKEN
 # Secret Manager:      Notion_Google_Cloud_Sync
@@ -6,12 +6,12 @@
 # Service account:     visionlink-history-runner@work-projects-486912.iam.gserviceaccount.com
 # Build identity:      PROJECT_NUMBER@cloudbuild.gserviceaccount.com
 #
-# This config does not execute the job and does not set the job's DRY_RUN to
-# false. The weekday scheduler is ensured by the deploy workflow after this
-# build. Source stays read-only. History stays append-only.
+# This config does not execute the job. The weekday scheduler is ensured by
+# the deploy workflow after this build. Source stays read-only. History stays
+# append-only.
 
 substitutions:
-  _DRY_RUN: "true"
+  _DRY_RUN: "false"
 
 options:
   logging: CLOUD_LOGGING_ONLY
@@ -27,8 +27,8 @@ steps:
       - |
         set -euo pipefail
         python3 --version
-        if [[ "${_DRY_RUN}" != "true" ]]; then
-          echo "ERROR: Refusing to deploy because _DRY_RUN is not true. This build never enables production writes."
+        if [[ "${_DRY_RUN}" != "false" ]]; then
+          echo "ERROR: Refusing to deploy because _DRY_RUN is not false. The resting job is DRY_RUN=false."
           exit 1
         fi
         if [[ "$PROJECT_ID" != "work-projects-486912" ]]; then
@@ -70,11 +70,11 @@ steps:
       - -c
       - |
         set -euo pipefail
-        if [[ "${_DRY_RUN}" != "true" ]]; then
-          echo "ERROR: Refusing to deploy because _DRY_RUN is not true. This build never enables production writes."
+        if [[ "${_DRY_RUN}" != "false" ]]; then
+          echo "ERROR: Refusing to deploy because _DRY_RUN is not false. The resting job is DRY_RUN=false."
           exit 1
         fi
-        ENV_VARS="^@^DRY_RUN=true@SOURCE_DATABASE_ID=3db284de-cb43-80ed-9b6f-fc20d6cc20eb@DESTINATION_DATABASE_TITLE=Cat VisionLink History@DESTINATION_DATABASE_ID=0357c6bd-2650-4dfc-affb-72430beaca84@BUSINESS_TIMEZONE=America/Los_Angeles"
+        ENV_VARS="^@^DRY_RUN=false@SOURCE_DATABASE_ID=3db284de-cb43-80ed-9b6f-fc20d6cc20eb@DESTINATION_DATABASE_TITLE=Cat VisionLink History@DESTINATION_DATABASE_ID=0357c6bd-2650-4dfc-affb-72430beaca84@BUSINESS_TIMEZONE=America/Los_Angeles"
         gcloud run jobs deploy notion-visionlink-history-snapshot \
           --project="$PROJECT_ID" \
           --region=us-west1 \
@@ -93,4 +93,4 @@ steps:
           --region=us-west1 \
           --format=json \
           | python3 deploy/assert_job_config.py
-        echo "Deployed DRY_RUN=true. Did not execute the job. The weekday scheduler is ensured by the deploy workflow."
+        echo "Deployed DRY_RUN=false. Did not execute the job. The weekday scheduler is ensured by the deploy workflow."

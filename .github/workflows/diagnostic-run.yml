@@ -1,9 +1,10 @@
 # Manual production diagnostic for notion-visionlink-history-snapshot.
 #
 # workflow_dispatch only. It does not run on push, pull request, or schedule.
-# It executes the existing Cloud Run job once, then puts DRY_RUN back to true.
-# It does not change the image, service account, secret mapping, or database
-# ids, and it does not create Cloud Scheduler.
+# It verifies the job exists, executes it once with max-retries=0, then
+# restores DRY_RUN=false and max-retries=3. The resting job is already
+# DRY_RUN=false. It does not change the image, service account, secret
+# mapping, or database ids, and it does not create Cloud Scheduler.
 
 name: diagnostic run
 
@@ -37,10 +38,14 @@ jobs:
       - name: Set up gcloud
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Verify dry run and logging access
+      - name: Verify job and logging access
         id: precheck
         run: |
           set -euo pipefail
+          gcloud run jobs describe "${JOB}" \
+            --project="${PROJECT}" \
+            --region="${REGION}" \
+            --format='value(metadata.name)'
           python3 - << 'PY' > /tmp/dry-run-value.txt
           import json, subprocess, os
           raw = subprocess.check_output([
@@ -68,8 +73,8 @@ jobs:
           PY
           DRY="$(cat /tmp/dry-run-value.txt)"
           echo "DRY_RUN before execution: ${DRY}"
-          if [[ "${DRY}" != "true" ]]; then
-            echo "ERROR: live DRY_RUN is '${DRY}', not true. Not executing." >&2
+          if [[ "${DRY}" != "false" ]]; then
+            echo "ERROR: live DRY_RUN is '${DRY}', not false. Not executing." >&2
             exit 1
           fi
           if ! gcloud logging read \
@@ -135,16 +140,16 @@ jobs:
             exit 1
           fi
 
-      - name: Restore dry run
+      - name: Restore production config
         id: restore
         if: always() && steps.execute.outputs.armed == 'true'
         run: |
           set -euo pipefail
-          echo "Restoring DRY_RUN=true and max-retries=3"
+          echo "Restoring DRY_RUN=false and max-retries=3"
           gcloud run jobs update "${JOB}" \
             --project="${PROJECT}" \
             --region="${REGION}" \
-            --update-env-vars=DRY_RUN=true \
+            --update-env-vars=DRY_RUN=false \
             --max-retries=3 \
             --quiet
           python3 - << 'PY' > /tmp/dry-run-restored.txt
@@ -174,8 +179,8 @@ jobs:
           PY
           DRY="$(cat /tmp/dry-run-restored.txt)"
           echo "LIVE_DRY_RUN=${DRY}"
-          if [[ "${DRY}" != "true" ]]; then
-            echo "ERROR: live DRY_RUN is '${DRY}', not true" >&2
+          if [[ "${DRY}" != "false" ]]; then
+            echo "ERROR: live DRY_RUN is '${DRY}', not false" >&2
             exit 1
           fi
 
