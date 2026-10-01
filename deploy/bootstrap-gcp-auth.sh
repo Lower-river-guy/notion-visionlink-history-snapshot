@@ -21,6 +21,7 @@ DEPLOYER="github-visionlink-deployer@work-projects-486912.iam.gserviceaccount.co
 RUNNER="visionlink-history-runner@work-projects-486912.iam.gserviceaccount.com"
 SCHEDULER_ROLE="visionlinkHistorySchedulerDeployer"
 BUILD_SUBMIT_ROLE="visionlinkHistoryBuildSubmitter"
+LOG_READER_ROLE="visionlinkHistoryLogReader"
 AR_LOCATION="us-west1"
 AR_REPO="cloud-run-source-deploy"
 GITHUB_REPO="Lower-river-guy/notion-visionlink-history-snapshot"
@@ -36,6 +37,8 @@ SCHEDULER_ROLE_TITLE="VisionLink history scheduler deploy"
 SCHEDULER_ROLE_DESCRIPTION="Create and update Cloud Scheduler jobs for the VisionLink history snapshot. Does not run or delete them."
 BUILD_SUBMIT_ROLE_TITLE="VisionLink history build submit"
 BUILD_SUBMIT_ROLE_DESCRIPTION="List Cloud Storage buckets so the deployer can stage Cloud Build source."
+LOG_READER_ROLE_TITLE="VisionLink history log reader"
+LOG_READER_ROLE_DESCRIPTION="Read Cloud Logging entries for one VisionLink history execution."
 AR_DESCRIPTION="Images for notion-visionlink-history-snapshot"
 
 require_max_length() {
@@ -56,6 +59,8 @@ require_max_length "Custom role title" "${SCHEDULER_ROLE_TITLE}" 100
 require_max_length "Custom role description" "${SCHEDULER_ROLE_DESCRIPTION}" 256
 require_max_length "Build submit role title" "${BUILD_SUBMIT_ROLE_TITLE}" 100
 require_max_length "Build submit role description" "${BUILD_SUBMIT_ROLE_DESCRIPTION}" 256
+require_max_length "Log reader role title" "${LOG_READER_ROLE_TITLE}" 100
+require_max_length "Log reader role description" "${LOG_READER_ROLE_DESCRIPTION}" 256
 require_max_length "Artifact Registry description" "${AR_DESCRIPTION}" 256
 
 # IDs are already valid, so they are not renamed to shorten a display name.
@@ -77,6 +82,7 @@ require_id "Workload Identity Provider id" "${PROVIDER}" '^[a-z][a-z0-9-]{2,30}[
 require_id "Deployer service account id" "${DEPLOYER_NAME}" '^[a-z][a-z0-9-]{4,28}[a-z0-9]$'
 require_id "Custom role id" "${SCHEDULER_ROLE}" '^[a-zA-Z][a-zA-Z0-9_.]{2,63}$'
 require_id "Build submit role id" "${BUILD_SUBMIT_ROLE}" '^[a-zA-Z][a-zA-Z0-9_.]{2,63}$'
+require_id "Log reader role id" "${LOG_READER_ROLE}" '^[a-zA-Z][a-zA-Z0-9_.]{2,63}$'
 
 if [[ "$#" -gt 0 ]]; then
   echo "ERROR: This script takes no arguments. It only configures Workload Identity Federation." >&2
@@ -277,6 +283,30 @@ fi
 "${GCLOUD}" projects add-iam-policy-binding "${PROJECT}" \
   --member="serviceAccount:${DEPLOYER}" \
   --role="projects/${PROJECT}/roles/${BUILD_SUBMIT_ROLE}" \
+  --quiet >/dev/null
+
+# roles/run.developer already covers job get, job update, job run, and
+# execution get. roles/logging.logWriter does not include log entry list.
+LOG_READER_PERMISSIONS="logging.logEntries.list"
+if "${GCLOUD}" iam roles describe "${LOG_READER_ROLE}" --project="${PROJECT}" >/dev/null 2>&1; then
+  echo "Reusing custom role ${LOG_READER_ROLE}"
+  "${GCLOUD}" iam roles update "${LOG_READER_ROLE}" \
+    --project="${PROJECT}" \
+    --title="${LOG_READER_ROLE_TITLE}" \
+    --description="${LOG_READER_ROLE_DESCRIPTION}" \
+    --permissions="${LOG_READER_PERMISSIONS}" \
+    --stage=GA >/dev/null
+else
+  "${GCLOUD}" iam roles create "${LOG_READER_ROLE}" \
+    --project="${PROJECT}" \
+    --title="${LOG_READER_ROLE_TITLE}" \
+    --description="${LOG_READER_ROLE_DESCRIPTION}" \
+    --permissions="${LOG_READER_PERMISSIONS}" \
+    --stage=GA >/dev/null
+fi
+"${GCLOUD}" projects add-iam-policy-binding "${PROJECT}" \
+  --member="serviceAccount:${DEPLOYER}" \
+  --role="projects/${PROJECT}/roles/${LOG_READER_ROLE}" \
   --quiet >/dev/null
 
 CLOUDBUILD_BUCKET="gs://${PROJECT}_cloudbuild"

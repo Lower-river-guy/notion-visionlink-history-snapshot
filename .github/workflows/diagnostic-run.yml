@@ -1,0 +1,257 @@
+# Manual production diagnostic for notion-visionlink-history-snapshot.
+#
+# workflow_dispatch only. It does not run on push, pull request, or schedule.
+# It executes the existing Cloud Run job once, then puts DRY_RUN back to true.
+# It does not change the image, service account, secret mapping, or database
+# ids, and it does not create Cloud Scheduler.
+
+name: diagnostic run
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: visionlink-history-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: gcp
+    permissions:
+      contents: read
+      id-token: write
+      deployments: write
+    env:
+      PROJECT: work-projects-486912
+      REGION: us-west1
+      JOB: notion-visionlink-history-snapshot
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Verify dry run and logging access
+        id: precheck
+        run: |
+          set -euo pipefail
+          python3 - << 'PY' > /tmp/dry-run-value.txt
+          import json, subprocess, os
+          raw = subprocess.check_output([
+              "gcloud", "run", "jobs", "describe", os.environ["JOB"],
+              "--project", os.environ["PROJECT"],
+              "--region", os.environ["REGION"],
+              "--format", "json",
+          ], text=True)
+          job = json.loads(raw)
+          found = []
+          def walk(node):
+              if isinstance(node, dict):
+                  env = node.get("env")
+                  if isinstance(env, list):
+                      for item in env:
+                          if isinstance(item, dict) and item.get("name") == "DRY_RUN":
+                              found.append(item.get("value"))
+                  for value in node.values():
+                      walk(value)
+              elif isinstance(node, list):
+                  for value in node:
+                      walk(value)
+          walk(job)
+          print(found[-1] if found else "")
+          PY
+          DRY="$(cat /tmp/dry-run-value.txt)"
+          echo "DRY_RUN before execution: ${DRY}"
+          if [[ "${DRY}" != "true" ]]; then
+            echo "ERROR: live DRY_RUN is '${DRY}', not true. Not executing." >&2
+            exit 1
+          fi
+          if ! gcloud logging read \
+            "resource.type=\"cloud_run_job\" AND resource.labels.job_name=\"${JOB}\" AND resource.labels.location=\"${REGION}\"" \
+            --project="${PROJECT}" \
+            --limit=1 \
+            --freshness=7d \
+            --format='value(timestamp)' > /tmp/log-probe.txt 2> /tmp/log-probe.err; then
+            echo "ERROR: Cloud Logging read failed. Not executing." >&2
+            cat /tmp/log-probe.err >&2
+            exit 1
+          fi
+
+      - name: Execute once
+        id: execute
+        run: |
+          set -euo pipefail
+          gcloud run jobs update "${JOB}" \
+            --project="${PROJECT}" \
+            --region="${REGION}" \
+            --update-env-vars=DRY_RUN=false \
+            --max-retries=0 \
+            --quiet
+          echo "armed=true" >> "$GITHUB_OUTPUT"
+
+          EXECUTION="$(gcloud run jobs execute "${JOB}" \
+            --project="${PROJECT}" \
+            --region="${REGION}" \
+            --format='value(metadata.name)' \
+            --quiet)"
+          echo "execution=${EXECUTION}" >> "$GITHUB_OUTPUT"
+          echo "EXECUTION=${EXECUTION}"
+          if [[ -z "${EXECUTION}" ]]; then
+            echo "ERROR: execute did not return an execution name. Not executing again." >&2
+            exit 1
+          fi
+
+          COMPLETED=""
+          for _ in $(seq 1 160); do
+            COMPLETED="$(gcloud run jobs executions describe "${EXECUTION}" \
+              --project="${PROJECT}" \
+              --region="${REGION}" \
+              --format=json | python3 -c 'import json,sys; print((json.load(sys.stdin).get("status") or {}).get("completionTime") or "")')"
+            if [[ -n "${COMPLETED}" ]]; then
+              break
+            fi
+            sleep 15
+          done
+          gcloud run jobs executions describe "${EXECUTION}" \
+            --project="${PROJECT}" \
+            --region="${REGION}" \
+            --format='yaml(metadata.name,status.completionTime,status.succeededCount,status.failedCount,status.conditions)'
+          if [[ -z "${COMPLETED}" ]]; then
+            echo "ERROR: execution ${EXECUTION} did not finish during the wait. Not executing again." >&2
+            exit 1
+          fi
+          SUCCEEDED="$(gcloud run jobs executions describe "${EXECUTION}" \
+            --project="${PROJECT}" \
+            --region="${REGION}" \
+            --format='value(status.succeededCount)')"
+          if [[ "${SUCCEEDED}" != "1" ]]; then
+            echo "execution_failed=true" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Restore dry run
+        id: restore
+        if: always() && steps.execute.outputs.armed == 'true'
+        run: |
+          set -euo pipefail
+          echo "Restoring DRY_RUN=true and max-retries=3"
+          gcloud run jobs update "${JOB}" \
+            --project="${PROJECT}" \
+            --region="${REGION}" \
+            --update-env-vars=DRY_RUN=true \
+            --max-retries=3 \
+            --quiet
+          python3 - << 'PY' > /tmp/dry-run-restored.txt
+          import json, subprocess, os
+          raw = subprocess.check_output([
+              "gcloud", "run", "jobs", "describe", os.environ["JOB"],
+              "--project", os.environ["PROJECT"],
+              "--region", os.environ["REGION"],
+              "--format", "json",
+          ], text=True)
+          job = json.loads(raw)
+          found = []
+          def walk(node):
+              if isinstance(node, dict):
+                  env = node.get("env")
+                  if isinstance(env, list):
+                      for item in env:
+                          if isinstance(item, dict) and item.get("name") == "DRY_RUN":
+                              found.append(item.get("value"))
+                  for value in node.values():
+                      walk(value)
+              elif isinstance(node, list):
+                  for value in node:
+                      walk(value)
+          walk(job)
+          print(found[-1] if found else "")
+          PY
+          DRY="$(cat /tmp/dry-run-restored.txt)"
+          echo "LIVE_DRY_RUN=${DRY}"
+          if [[ "${DRY}" != "true" ]]; then
+            echo "ERROR: live DRY_RUN is '${DRY}', not true" >&2
+            exit 1
+          fi
+
+      - name: Read execution logs
+        id: logs
+        if: always() && steps.execute.outputs.execution != ''
+        env:
+          EXECUTION: ${{ steps.execute.outputs.execution }}
+        run: |
+          set -euo pipefail
+          gcloud logging read \
+            "resource.type=\"cloud_run_job\" AND resource.labels.job_name=\"${JOB}\" AND resource.labels.location=\"${REGION}\" AND labels.\"run.googleapis.com/execution_name\"=\"${EXECUTION}\"" \
+            --project="${PROJECT}" \
+            --order=asc \
+            --limit=5000 \
+            --format=json \
+            --freshness=1d > execution-log.json
+          python3 - "${EXECUTION}" execution-log.json << 'PY'
+          import json, sys
+          execution, path = sys.argv[1], sys.argv[2]
+          entries = json.load(open(path))
+          records = []
+          for entry in entries:
+              payload = entry.get("jsonPayload") or {}
+              text = entry.get("textPayload") or ""
+              if not payload and text.startswith("{"):
+                  try:
+                      payload = json.loads(text)
+                  except json.JSONDecodeError:
+                      payload = {}
+              if payload:
+                  records.append(payload)
+              elif text:
+                  records.append({"message": text})
+          print(f"execution: {execution}")
+          print(f"log records: {len(records)}")
+          finished = [row for row in records if row.get("message") == "snapshot finished"]
+          schema = [row for row in records if str(row.get("message", "")).startswith("schema differences")]
+          failures = [row for row in records if str(row.get("message", "")).startswith("machine snapshot failed")]
+          if finished:
+              row = finished[-1]
+              print(f"status: {row.get('status')}")
+              print(f"version: {row.get('version')}")
+              print(f"source records: {row.get('sourceRecords')}")
+              print(f"history created: {row.get('historyCreated')}")
+              print(f"duplicates skipped: {row.get('duplicatesSkipped')}")
+              print(f"failed count: {row.get('recordsFailed')}")
+              print(f"snapshot run id: {row.get('runId')}")
+              print(f"dry run: {row.get('dryRun')}")
+          else:
+              print("status: snapshot finished record not found")
+          print("schema differences:")
+          if schema:
+              print(json.dumps(schema[0].get("schemaDifferences"), indent=2, ensure_ascii=False))
+          else:
+              print("(none logged)")
+          print(f"machine failures logged: {len(failures)}")
+          for row in failures[:8]:
+              print("---")
+              for key in (
+                  "machineId",
+                  "exceptionType",
+                  "exceptionMessage",
+                  "notionStatus",
+                  "notionError",
+                  "property",
+                  "destinationDatabaseId",
+                  "runId",
+              ):
+                  print(f"{key}: {row.get(key)}")
+          PY
+
+      - name: Upload execution log
+        if: always() && steps.execute.outputs.execution != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostic-execution-log
+          path: execution-log.json
+          if-no-files-found: ignore

@@ -200,6 +200,8 @@ def test_bootstrap_wif_is_repository_scoped_and_does_not_deploy():
     assert "roles/storage.objectAdmin" in script
     assert "gs://${PROJECT}_cloudbuild" in script
     assert 'BUILD_SUBMIT_ROLE="visionlinkHistoryBuildSubmitter"' in script
+    assert 'LOG_READER_ROLE="visionlinkHistoryLogReader"' in script
+    assert "logging.logEntries.list" in script
     assert "roles/storage.admin" not in script
     assert "roles/owner" not in script
     assert "roles/editor" not in script
@@ -224,9 +226,43 @@ def test_bootstrap_wif_is_repository_scoped_and_does_not_deploy():
         'SCHEDULER_ROLE_DESCRIPTION="Create and update Cloud Scheduler jobs for the VisionLink history snapshot. Does not run or delete them."': 256,
         'BUILD_SUBMIT_ROLE_TITLE="VisionLink history build submit"': 100,
         'BUILD_SUBMIT_ROLE_DESCRIPTION="List Cloud Storage buckets so the deployer can stage Cloud Build source."': 256,
+        'LOG_READER_ROLE_TITLE="VisionLink history log reader"': 100,
+        'LOG_READER_ROLE_DESCRIPTION="Read Cloud Logging entries for one VisionLink history execution."': 256,
         'AR_DESCRIPTION="Images for notion-visionlink-history-snapshot"': 256,
     }
     for assignment, limit in names.items():
         assert assignment in script
         value = assignment.split('="', 1)[1][:-1]
         assert len(value) <= limit
+
+
+def test_diagnostic_workflow_is_manual_and_restores_dry_run():
+    text = (ROOT / ".github" / "workflows" / "diagnostic-run.yml").read_text()
+    assert "workflow_dispatch:" in text
+    assert "\n  push:" not in text
+    assert "pull_request:" not in text
+    assert "schedule:" not in text
+    assert "cancel-in-progress: false" in text
+    assert "environment: gcp" in text
+    assert "google-github-actions/auth@v2" in text
+    assert "GCP_WORKLOAD_IDENTITY_PROVIDER" in text
+    assert "GCP_SERVICE_ACCOUNT" in text
+    assert "work-projects-486912" in text
+    assert "us-west1" in text
+    assert "notion-visionlink-history-snapshot" in text
+    assert text.count("gcloud run jobs execute") == 1
+    assert "--update-env-vars=DRY_RUN=false" in text
+    assert "--update-env-vars=DRY_RUN=true" in text
+    assert "--max-retries=0" in text
+    assert "--max-retries=3" in text
+    assert "if: always()" in text
+    assert "run.googleapis.com/execution_name" in text
+    assert "upload-artifact@v4" in text
+    assert "gcloud scheduler" not in text
+    assert "--image" not in text
+    assert "--set-secrets" not in text
+    assert "--set-env-vars" not in text
+    assert "--service-account" not in text
+    assert "roles/owner" not in text
+    assert "roles/editor" not in text
+    assert text.index("Cloud Logging read failed") < text.index("gcloud run jobs execute")
