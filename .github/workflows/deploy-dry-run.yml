@@ -20,6 +20,12 @@
 # Cloud Scheduler. The desired schedule remains 10:00 AM America/Los_Angeles,
 # Monday-Friday, cron 0 10 * * 1-5, and stays undeployed.
 #
+# The deploy job uses the GitHub environment "gcp". This repository's immutable
+# OIDC subject includes the owner id, repository id, and branch ref. On this
+# branch that subject is 130 bytes, and Google Cloud rejects google.subject
+# above 127. Referencing an environment replaces the branch ref in the subject
+# and keeps it under the limit. The pool condition remains this repository only.
+#
 # One-time setup, from an authenticated gcloud session:
 #   bash deploy/bootstrap-gcp-auth.sh
 
@@ -49,9 +55,11 @@ jobs:
     needs: test
     if: github.event_name == 'push' && (github.ref == 'refs/heads/cursor/visionlink-history-snapshot-3dab' || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
+    environment: gcp
     permissions:
       contents: read
       id-token: write
+      deployments: write
     steps:
       - uses: actions/checkout@v4
       - name: Check deploy credentials

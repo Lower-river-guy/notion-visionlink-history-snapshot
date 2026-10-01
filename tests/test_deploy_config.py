@@ -161,6 +161,7 @@ def test_deploy_files_keep_live_mapping():
     assert "github-visionlink-deployer@work-projects-486912.iam.gserviceaccount.com" in workflow
     assert "google-github-actions/auth@v2" in workflow
     assert "id-token: write" in workflow
+    assert "environment: gcp" in workflow
     assert "developer.gserviceaccount.com" not in script
     assert "_DRY_RUN: \"false\"" not in build
     assert "_DRY_RUN=false" not in workflow
