@@ -80,6 +80,14 @@ a manual run and `.github/workflows/diagnostic-run.yml` still see a dry-run
 job at rest. Cloud Run merges the override into that execution only. There is
 no second Cloud Run job and no other VisionLink history schedule.
 
+The scheduler authenticates as
+`github-visionlink-deployer@work-projects-486912.iam.gserviceaccount.com`.
+That call works only after
+`service-564809734796@gcp-sa-cloudscheduler.iam.gserviceaccount.com` has
+`roles/iam.serviceAccountUser` on the deployer. `deploy/bootstrap-gcp-auth.sh`
+grants it from an admin `gcloud` session. The deploy workflow cannot: the
+deployer lacks `iam.serviceAccounts.getIamPolicy`.
+
 ## Dry run
 
 `DRY_RUN=true` connects to Notion, reads the whole source database, loads the
@@ -159,8 +167,10 @@ weekday 10:00 AM Pacific scheduler. A scheduled execution overrides
 The runtime account is not the GitHub deployment identity. One-time setup is
 `deploy/bootstrap-gcp-auth.sh`. It does not deploy the application and does
 not create the scheduler. It grants the deployer permission to create,
-update, and delete Cloud Scheduler jobs, and lets the Cloud Scheduler service
-agent act as the deployer so the weekday job can call the Cloud Run API.
+update, and delete Cloud Scheduler jobs. It also grants the Cloud Scheduler
+service agent `roles/iam.serviceAccountUser` on the deployer. Scheduled runs
+cannot mint an OAuth token without that binding, and the GitHub deployer
+cannot set or read it.
 
 `DESTINATION_DATABASE_ID` is `0357c6bd-2650-4dfc-affb-72430beaca84`, the
 history database found via the Notion API. Every run still checks that its
