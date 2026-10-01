@@ -34,7 +34,7 @@ POOL_DISPLAY_NAME="VisionLink GitHub"
 PROVIDER_DISPLAY_NAME="GitHub Actions"
 DEPLOYER_DISPLAY_NAME="GitHub Actions deployer for VisionLink history snapshot"
 SCHEDULER_ROLE_TITLE="VisionLink history scheduler deploy"
-SCHEDULER_ROLE_DESCRIPTION="Create and update Cloud Scheduler jobs for the VisionLink history snapshot. Does not run or delete them."
+SCHEDULER_ROLE_DESCRIPTION="Create, update, and delete Cloud Scheduler jobs for the VisionLink history snapshot. Does not execute them."
 BUILD_SUBMIT_ROLE_TITLE="VisionLink history build submit"
 BUILD_SUBMIT_ROLE_DESCRIPTION="List Cloud Storage buckets so the deployer can stage Cloud Build source."
 LOG_READER_ROLE_TITLE="VisionLink history log reader"
@@ -212,6 +212,22 @@ PRINCIPAL="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/location
   --role="roles/iam.serviceAccountUser" \
   --quiet >/dev/null
 
+# Cloud Scheduler mints an OAuth token for the deployer when the weekday job
+# runs. The deployer already has run.jobs.runWithOverrides. This binding does
+# not create or run a scheduler job.
+SCHEDULER_AGENT="service-${PROJECT_NUMBER}@gcp-sa-cloudscheduler.iam.gserviceaccount.com"
+if ! "${GCLOUD}" iam service-accounts describe "${SCHEDULER_AGENT}" --project="${PROJECT}" >/dev/null 2>&1; then
+  "${GCLOUD}" beta services identity create \
+    --service=cloudscheduler.googleapis.com \
+    --project="${PROJECT}" >/dev/null \
+    || echo "Cloud Scheduler service agent was not created by this command. Continuing with the IAM binding."
+fi
+"${GCLOUD}" iam service-accounts add-iam-policy-binding "${DEPLOYER}" \
+  --project="${PROJECT}" \
+  --member="serviceAccount:${SCHEDULER_AGENT}" \
+  --role="roles/iam.serviceAccountUser" \
+  --quiet >/dev/null
+
 BUILD_AGENT="service-${PROJECT_NUMBER}@gcp-sa-cloudbuild.iam.gserviceaccount.com"
 if ! "${GCLOUD}" iam service-accounts describe "${BUILD_AGENT}" --project="${PROJECT}" >/dev/null 2>&1; then
   "${GCLOUD}" beta services identity create \
@@ -238,7 +254,7 @@ do
     --quiet >/dev/null
 done
 
-SCHEDULER_PERMISSIONS="cloudscheduler.jobs.create,cloudscheduler.jobs.get,cloudscheduler.jobs.list,cloudscheduler.jobs.update,cloudscheduler.locations.get,cloudscheduler.locations.list"
+SCHEDULER_PERMISSIONS="cloudscheduler.jobs.create,cloudscheduler.jobs.delete,cloudscheduler.jobs.get,cloudscheduler.jobs.list,cloudscheduler.jobs.update,cloudscheduler.locations.get,cloudscheduler.locations.list"
 if "${GCLOUD}" iam roles describe "${SCHEDULER_ROLE}" --project="${PROJECT}" >/dev/null 2>&1; then
   echo "Reusing custom role ${SCHEDULER_ROLE}"
   "${GCLOUD}" iam roles update "${SCHEDULER_ROLE}" \
@@ -332,7 +348,7 @@ PROVIDER_RESOURCE="projects/${PROJECT_NUMBER}/locations/global/workloadIdentityP
 
 echo
 echo "Workload Identity is configured. No Cloud Run job was deployed or executed."
-echo "No Cloud Scheduler job was created."
+echo "No Cloud Scheduler job was created. The deploy workflow ensures notion-visionlink-history-weekday-10am."
 echo
 echo "GCP_WORKLOAD_IDENTITY_PROVIDER=${PROVIDER_RESOURCE}"
 echo "GCP_SERVICE_ACCOUNT=${DEPLOYER}"

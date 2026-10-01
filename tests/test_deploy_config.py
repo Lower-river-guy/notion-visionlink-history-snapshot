@@ -165,7 +165,9 @@ def test_deploy_files_keep_live_mapping():
     assert "developer.gserviceaccount.com" not in script
     assert "_DRY_RUN: \"false\"" not in build
     assert "_DRY_RUN=false" not in workflow
-    assert "gcloud scheduler" not in workflow
+    assert "deploy/ensure_weekday_scheduler.sh" in workflow
+    assert "gcloud run jobs execute" not in workflow
+    assert "gcloud run jobs describe notion-visionlink-history-snapshot" in workflow
     assert "gcloud builds submit --config cloudbuild.yaml --project work-projects-486912" in workflow
 
     env_lines = [line for line in script.splitlines() if "ENV_VARS=" in line or "set-env-vars" in line]
@@ -209,6 +211,9 @@ def test_bootstrap_wif_is_repository_scoped_and_does_not_deploy():
     assert "gcloud scheduler jobs" not in script
     assert "gcloud run jobs" not in script
     assert "DRY_RUN=false" not in script
+    assert "cloudscheduler.jobs.delete" in script
+    assert "service-${PROJECT_NUMBER}@gcp-sa-cloudscheduler.iam.gserviceaccount.com" in script
+    assert "--service=cloudscheduler.googleapis.com" in script
     assert "attribute.repository_owner/" not in script
     assert 'POOL="github-visionlink"' in script
     assert 'PROVIDER="github"' in script
@@ -223,7 +228,7 @@ def test_bootstrap_wif_is_repository_scoped_and_does_not_deploy():
         'PROVIDER_DISPLAY_NAME="GitHub Actions"': 32,
         'DEPLOYER_DISPLAY_NAME="GitHub Actions deployer for VisionLink history snapshot"': 100,
         'SCHEDULER_ROLE_TITLE="VisionLink history scheduler deploy"': 100,
-        'SCHEDULER_ROLE_DESCRIPTION="Create and update Cloud Scheduler jobs for the VisionLink history snapshot. Does not run or delete them."': 256,
+        'SCHEDULER_ROLE_DESCRIPTION="Create, update, and delete Cloud Scheduler jobs for the VisionLink history snapshot. Does not execute them."': 256,
         'BUILD_SUBMIT_ROLE_TITLE="VisionLink history build submit"': 100,
         'BUILD_SUBMIT_ROLE_DESCRIPTION="List Cloud Storage buckets so the deployer can stage Cloud Build source."': 256,
         'LOG_READER_ROLE_TITLE="VisionLink history log reader"': 100,

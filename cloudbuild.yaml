@@ -6,8 +6,9 @@
 # Service account:     visionlink-history-runner@work-projects-486912.iam.gserviceaccount.com
 # Build identity:      PROJECT_NUMBER@cloudbuild.gserviceaccount.com
 #
-# This config does not execute the job, does not set DRY_RUN=false, and does
-# not create Cloud Scheduler. Source stays read-only. History stays append-only.
+# This config does not execute the job and does not set the job's DRY_RUN to
+# false. The weekday scheduler is ensured by the deploy workflow after this
+# build. Source stays read-only. History stays append-only.
 
 substitutions:
   _DRY_RUN: "true"
@@ -92,4 +93,4 @@ steps:
           --region=us-west1 \
           --format=json \
           | python3 deploy/assert_job_config.py
-        echo "Deployed DRY_RUN=true. Did not execute the job. Did not create Cloud Scheduler."
+        echo "Deployed DRY_RUN=true. Did not execute the job. The weekday scheduler is ensured by the deploy workflow."
