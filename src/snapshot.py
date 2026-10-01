@@ -67,6 +67,7 @@ _NOTION_DATE = re.compile(
     r"^\d{4}-\d{2}-\d{2}"
     r"(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})?)?$"
 )
+_DATE_OFFSET = re.compile(r"(Z|[+-]\d{2}:\d{2})$", re.IGNORECASE)
 _TEXT_LIMIT = 2000
 
 
@@ -902,30 +903,47 @@ def _copy_date(prop: Any) -> dict[str, Any] | None:
     date = prop.get("date")
     if not isinstance(date, dict) or not date.get("start"):
         return None
-    start = str(date["start"]).strip()
-    if not _NOTION_DATE.match(start):
-        raise ValueError(f"malformed date {start!r}")
-    payload: dict[str, Any] = {"start": start}
+    time_zone = str(date.get("time_zone") or "").strip() or None
+    payload: dict[str, Any] = {
+        "start": _notion_date_bound(str(date["start"]), time_zone, label="date"),
+    }
     end = date.get("end")
     if end:
-        end_text = str(end).strip()
-        if not _NOTION_DATE.match(end_text):
-            raise ValueError(f"malformed date end {end_text!r}")
-        payload["end"] = end_text
-    time_zone = date.get("time_zone")
+        payload["end"] = _notion_date_bound(str(end), time_zone, label="date end")
     if time_zone:
         payload["time_zone"] = time_zone
     return {"date": payload}
 
 
 def _execution_date(snapshot_local: datetime, timezone_name: str) -> dict[str, Any]:
-    local = snapshot_local.astimezone(ZoneInfo(timezone_name))
+    """Execution instant as Pacific (or configured) wall time, without a UTC offset.
+
+    Notion rejects time_zone combined with a non-zero offset such as -07:00.
+    The wall time plus the IANA time_zone is the same instant.
+    """
+    local = snapshot_local.astimezone(ZoneInfo(timezone_name)).replace(microsecond=0)
     return {
         "date": {
-            "start": local.isoformat(timespec="seconds"),
+            "start": local.strftime("%Y-%m-%dT%H:%M:%S"),
             "time_zone": timezone_name,
         }
     }
+
+
+def _notion_date_bound(value: str, time_zone: str | None, *, label: str) -> str:
+    """One Notion date bound. A named time_zone never keeps a UTC offset."""
+    text = value.strip()
+    if not _NOTION_DATE.match(text):
+        raise ValueError(f"malformed {label} {text!r}")
+    if not time_zone or not _DATE_OFFSET.search(text):
+        return text
+    normalized = text[:-1] + "+00:00" if text[-1] in "Zz" else text
+    instant = datetime.fromisoformat(normalized)
+    local = instant.astimezone(ZoneInfo(time_zone))
+    if local.microsecond:
+        millis = local.microsecond // 1000
+        return local.strftime("%Y-%m-%dT%H:%M:%S.") + f"{millis:03d}"
+    return local.strftime("%Y-%m-%dT%H:%M:%S")
 
 
 def _title(value: str) -> dict[str, Any]:

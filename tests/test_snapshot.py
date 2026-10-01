@@ -5,13 +5,32 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from src.config import Config
+from src.config import VERSION, Config
 from src.snapshot import resolve_run_id, run_snapshot
 from tests.fakes import FakeNotion
 from tests.notion_fixtures import history_database, source_database, source_page
 
 LA = ZoneInfo("America/Los_Angeles")
 EXECUTION = datetime(2026, 10, 1, 17, 5, 11, tzinfo=timezone.utc)  # 10:05:11 PDT
+_NONZERO_OFFSET = __import__("re").compile(r"[+-](?!00:00)\d{2}:\d{2}$")
+
+
+def _assert_notion_date(date: dict) -> None:
+    """time_zone must not be paired with a non-zero UTC offset or a Z suffix."""
+    time_zone = date.get("time_zone")
+    for key in ("start", "end"):
+        value = date.get(key)
+        if not value or not time_zone:
+            continue
+        assert not str(value).endswith(("Z", "z")), value
+        assert _NONZERO_OFFSET.search(str(value)) is None, value
+
+
+def _instant(date: dict) -> datetime:
+    start = str(date["start"])
+    if date.get("time_zone"):
+        return datetime.fromisoformat(start).replace(tzinfo=ZoneInfo(date["time_zone"]))
+    return datetime.fromisoformat(start.replace("Z", "+00:00").replace("z", "+00:00"))
 
 
 def _config(**overrides):
@@ -25,7 +44,7 @@ def _config(**overrides):
         snapshot_run_id=None,
         business_timezone="America/Los_Angeles",
         notion_version="2022-06-28",
-        version="0.01.00",
+        version=VERSION,
         cloud_run_execution="notion-visionlink-history-snapshot-abc",
     )
     values.update(overrides)
@@ -65,9 +84,12 @@ def test_property_mapping_snapshot_date_and_last_reported():
     assert properties["Hours"]["number"] == 47451.616944
     assert "San Bernardino" in properties["Location"]["rich_text"][0]["text"]["content"]
     assert properties["Last Reported"]["date"]["start"] == "2026-10-01T08:02:00.000Z"
+    assert "time_zone" not in properties["Last Reported"]["date"]
     snapshot = properties["Snapshot Date"]["date"]
-    assert snapshot["start"] == "2026-10-01T10:05:11-07:00"
+    assert snapshot["start"] == "2026-10-01T10:05:11"
     assert snapshot["time_zone"] == "America/Los_Angeles"
+    _assert_notion_date(snapshot)
+    assert _instant(snapshot) == EXECUTION.replace(microsecond=0)
     assert snapshot["start"] != properties["Last Reported"]["date"]["start"]
     assert properties["Snapshot Run ID"]["rich_text"][0]["text"]["content"] == (
         "2026-10-01T10:00:00_America-Los_Angeles"
@@ -93,7 +115,8 @@ def test_missing_optional_fields_still_snapshots_machine():
     assert "Last Reported" not in properties
     assert "Location" not in properties
     assert "Hours" not in properties
-    assert properties["Snapshot Date"]["date"]["start"] == "2026-10-01T10:05:11-07:00"
+    assert properties["Snapshot Date"]["date"]["start"] == "2026-10-01T10:05:11"
+    _assert_notion_date(properties["Snapshot Date"]["date"])
     assert properties["Machine ID"]["title"][0]["text"]["content"] == "51.27"
 
 
@@ -295,3 +318,85 @@ def test_schema_difference_log_names_expected_and_actual_types():
     assert "Latitude" in fields["missingProperties"]
     assert "Longitude" in fields["missingProperties"]
     assert fields["destinationDatabaseId"] == "0357c6bd-2650-4dfc-affb-72430beaca84"
+
+
+def test_snapshot_date_wall_time_covers_pdt_pst_and_utc():
+    _result, pdt_fake, _logs = _run([source_page("57.29", include_optional=False)])
+    pdt_date = pdt_fake.created[0][1]["Snapshot Date"]["date"]
+    assert pdt_date == {"start": "2026-10-01T10:05:11", "time_zone": "America/Los_Angeles"}
+    _assert_notion_date(pdt_date)
+    assert _instant(pdt_date) == EXECUTION
+
+    pst_moment = datetime(2026, 1, 15, 18, 5, 11, tzinfo=timezone.utc)  # 10:05:11 PST
+    pst_client = FakeNotion(source_database(), history_database())
+    pst_client.pages[pst_client.source["id"]] = [source_page("51.27", include_optional=False)]
+    run_snapshot(_config(), pst_client, lambda *args, **kwargs: None, now=pst_moment, pause_seconds=0)
+    pst_date = pst_client.created[0][1]["Snapshot Date"]["date"]
+    assert pst_date == {"start": "2026-01-15T10:05:11", "time_zone": "America/Los_Angeles"}
+    _assert_notion_date(pst_date)
+    assert _instant(pst_date) == pst_moment
+
+    utc_client = FakeNotion(source_database(), history_database())
+    utc_client.pages[utc_client.source["id"]] = [source_page("12.04", include_optional=False)]
+    run_snapshot(
+        _config(business_timezone="UTC"),
+        utc_client,
+        lambda *args, **kwargs: None,
+        now=EXECUTION,
+        pause_seconds=0,
+    )
+    utc_date = utc_client.created[0][1]["Snapshot Date"]["date"]
+    assert utc_date == {"start": "2026-10-01T17:05:11", "time_zone": "UTC"}
+    _assert_notion_date(utc_date)
+    assert _instant(utc_date) == EXECUTION
+
+
+def test_last_reported_keeps_utc_and_normalizes_zone_with_offset():
+    utc_result, utc_fake, _logs = _run(
+        [source_page("57.29", last_reported="2026-10-01T15:02:00.000Z")]
+    )
+    assert utc_result.history_created == 1
+    utc_reported = utc_fake.created[0][1]["Last Reported"]["date"]
+    assert utc_reported == {"start": "2026-10-01T15:02:00.000Z"}
+    assert _instant(utc_reported) == datetime(2026, 10, 1, 15, 2, tzinfo=timezone.utc)
+
+    offset_client = FakeNotion(source_database(), history_database())
+    offset_client.pages[offset_client.source["id"]] = [
+        source_page(
+            "51.27",
+            last_reported="2026-10-01T08:02:00.000-07:00",
+            last_reported_time_zone="America/Los_Angeles",
+        )
+    ]
+    run_snapshot(
+        _config(),
+        offset_client,
+        lambda *args, **kwargs: None,
+        now=EXECUTION,
+        pause_seconds=0,
+    )
+    pacific = offset_client.created[0][1]["Last Reported"]["date"]
+    assert pacific["time_zone"] == "America/Los_Angeles"
+    assert pacific["start"] == "2026-10-01T08:02:00"
+    _assert_notion_date(pacific)
+    assert _instant(pacific) == datetime(2026, 10, 1, 15, 2, tzinfo=timezone.utc)
+
+    zoned_utc = FakeNotion(source_database(), history_database())
+    zoned_utc.pages[zoned_utc.source["id"]] = [
+        source_page(
+            "12.04",
+            last_reported="2026-01-15T18:05:11Z",
+            last_reported_time_zone="America/Los_Angeles",
+        )
+    ]
+    run_snapshot(
+        _config(),
+        zoned_utc,
+        lambda *args, **kwargs: None,
+        now=EXECUTION,
+        pause_seconds=0,
+    )
+    winter = zoned_utc.created[0][1]["Last Reported"]["date"]
+    assert winter == {"start": "2026-01-15T10:05:11", "time_zone": "America/Los_Angeles"}
+    _assert_notion_date(winter)
+    assert _instant(winter) == datetime(2026, 1, 15, 18, 5, 11, tzinfo=timezone.utc)

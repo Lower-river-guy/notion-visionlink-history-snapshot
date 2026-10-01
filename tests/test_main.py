@@ -44,7 +44,7 @@ def test_success_returns_zero_and_summary_shape():
 
     assert code == 0
     finished = captured["snapshot finished"]
-    assert finished["version"] == "0.01.00"
+    assert finished["version"] == "0.01.01"
     assert finished["runId"] == "2026-10-01T10:00:00_America-Los_Angeles"
     assert finished["sourceRecords"] == 1
     assert finished["historyCreated"] == 1
@@ -65,7 +65,7 @@ def test_success_returns_zero_and_summary_shape():
     assert result.would_create == 1
     assert result.history_created == 0
     text = format_summary(result)
-    assert "Version: 0.01.00" in text
+    assert "Version: 0.01.01" in text
     assert "Status: SUCCESS" in text
     assert "Writes performed: 0" in text
 
