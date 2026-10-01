@@ -18,6 +18,7 @@ from src.notion_client import (
     NotionError,
     database_title,
     normalize_notion_id,
+    redact_secrets,
     same_notion_id,
 )
 
@@ -94,13 +95,13 @@ def resolve_run_id(
 ) -> str:
     """Build a retry-stable run id.
 
-    Scheduled runs set SNAPSHOT_SLOT to 06:00 or 14:00. The id is that slot's
-    civil time in the business timezone, so a retry later the same day still
-    matches and a later slot does not.
+    Scheduled runs set SNAPSHOT_SLOT to 10:00. The id is that slot's civil
+    time in the business timezone, so a retry later the same day still matches
+    and the next weekday does not.
 
     Manual runs (no slot) use the Cloud Run execution name, which is stable
     across task retries and different for a later execution. They never use a
-    slot id, so an off-schedule run does not collide with 6:00 AM or 2:00 PM.
+    slot id, so an off-schedule run does not collide with 10:00 AM.
     """
 
     if override:
@@ -207,11 +208,17 @@ def run_snapshot(
         )
 
     plan = build_schema_plan(source, destination)
-    if plan.schema_problems:
+    if plan.schema_problems or plan.schema_differences:
         logger(
             "WARNING",
-            "schema differences",
+            _schema_difference_message(plan.schema_differences),
             schemaProblems=plan.schema_problems,
+            schemaDifferences=plan.schema_differences,
+            missingProperties=_properties_by_classification(plan.schema_differences, "missing"),
+            incompatibleProperties=_properties_by_classification(
+                plan.schema_differences, "incompatible"
+            ),
+            destinationDatabaseId=plan.destination_database_id,
             runId=run_id,
         )
     logger(
@@ -279,13 +286,11 @@ def run_snapshot(
         if draft.errors or not draft.machine_id:
             failed += 1
             failed_ids.append(label)
-            logger(
-                "ERROR",
-                "machine snapshot failed",
-                machineId=draft.machine_id,
-                sourcePageId=draft.source_page_id,
-                error="; ".join(draft.errors) or "missing Machine ID",
-                runId=run_id,
+            _log_machine_failure(
+                logger,
+                draft=draft,
+                run_id=run_id,
+                destination_database_id=plan.destination_database_id,
             )
             continue
         if draft.warnings:
@@ -327,13 +332,12 @@ def run_snapshot(
         except NotionError as exc:
             failed += 1
             failed_ids.append(draft.machine_id)
-            logger(
-                "ERROR",
-                "machine snapshot failed",
-                machineId=draft.machine_id,
-                sourcePageId=draft.source_page_id,
-                error=str(exc),
-                runId=run_id,
+            _log_machine_failure(
+                logger,
+                draft=draft,
+                run_id=run_id,
+                destination_database_id=plan.destination_database_id,
+                exc=exc,
             )
             continue
         created += 1
@@ -362,6 +366,7 @@ def run_snapshot(
         unmapped_source_fields=plan.unmapped_source_fields,
         untouched_destination_fields=plan.untouched_destination_fields,
         schema_problems=plan.schema_problems,
+        schema_differences=plan.schema_differences,
         failed_machine_ids=failed_ids,
         coordinates_preserved_via_map=coordinates,
         writes_performed=created,
@@ -373,9 +378,31 @@ def build_schema_plan(source: dict[str, Any], destination: dict[str, Any]) -> Sc
     source_props = source.get("properties") or {}
     dest_props = destination.get("properties") or {}
     problems: list[str] = []
+    differences: list[dict[str, Any]] = []
     mappings: list[FieldMapping] = []
     select_options: dict[str, set[str]] = {}
     mapped_source: set[str] = set()
+
+    def record(
+        *,
+        expected_property: str | None,
+        actual_property: str | None,
+        expected_type: str | None,
+        actual_type: str | None,
+        classification: str,
+        detail: str,
+    ) -> None:
+        problems.append(detail)
+        differences.append(
+            {
+                "expectedProperty": expected_property,
+                "actualProperty": actual_property,
+                "expectedType": expected_type,
+                "actualType": actual_type,
+                "classification": classification,
+                "detail": detail,
+            }
+        )
 
     fatal_missing = []
     for name, expected_type in REQUIRED_DESTINATION.items():
@@ -395,23 +422,53 @@ def build_schema_plan(source: dict[str, Any], destination: dict[str, Any]) -> Sc
         source_prop = source_props.get(source_name)
         dest_prop = dest_props.get(dest_name)
         if not isinstance(source_prop, dict):
-            problems.append(f"Source property {source_name!r} was not found")
+            record(
+                expected_property=source_name,
+                actual_property=None,
+                expected_type=kind,
+                actual_type=None,
+                classification="missing",
+                detail=f"Source property {source_name!r} was not found",
+            )
             continue
         if not isinstance(dest_prop, dict):
-            problems.append(
-                f"History property {dest_name!r} was not found; {source_name!r} will not be copied"
+            record(
+                expected_property=dest_name,
+                actual_property=None,
+                expected_type=kind,
+                actual_type=None,
+                classification="missing",
+                detail=(
+                    f"History property {dest_name!r} was not found; "
+                    f"{source_name!r} will not be copied"
+                ),
             )
             continue
         source_type = source_prop.get("type")
         dest_type = dest_prop.get("type")
         if source_type != kind or dest_type != kind:
-            problems.append(
-                f"{source_name} ({source_type}) -> {dest_name} ({dest_type}) "
-                f"does not match expected type {kind}"
+            mismatched = dest_type if dest_type != kind else source_type
+            record(
+                expected_property=dest_name,
+                actual_property=dest_name,
+                expected_type=kind,
+                actual_type=None if mismatched is None else str(mismatched),
+                classification="incompatible",
+                detail=(
+                    f"{source_name} ({source_type}) -> {dest_name} ({dest_type}) "
+                    f"does not match expected type {kind}"
+                ),
             )
             continue
         if dest_name in NEVER_WRITE_DESTINATION or dest_type == "relation":
-            problems.append(f"Refusing to map {dest_name!r} because it must not be written")
+            record(
+                expected_property=dest_name,
+                actual_property=dest_name,
+                expected_type=kind,
+                actual_type=str(dest_type),
+                classification="not-written",
+                detail=f"Refusing to map {dest_name!r} because it must not be written",
+            )
             continue
         mappings.append(
             FieldMapping(
@@ -435,25 +492,49 @@ def build_schema_plan(source: dict[str, Any], destination: dict[str, Any]) -> Sc
             }
             missing = sorted(source_options - options)
             if missing:
-                problems.append(
-                    f"Destination select {dest_name!r} is missing source options: "
-                    + ", ".join(missing)
-                    + ". A machine that uses one of those values fails without a write."
+                record(
+                    expected_property=dest_name,
+                    actual_property=dest_name,
+                    expected_type="select",
+                    actual_type="select",
+                    classification="incompatible",
+                    detail=(
+                        f"Destination select {dest_name!r} is missing source options: "
+                        + ", ".join(missing)
+                        + ". A machine that uses one of those values fails without a write."
+                    ),
                 )
 
     for dest_name, dest_type, description in DERIVED_FIELDS:
         dest_prop = dest_props.get(dest_name)
         actual = dest_prop.get("type") if isinstance(dest_prop, dict) else None
         if actual != dest_type:
-            problems.append(
-                f"Derived history property {dest_name!r} type {actual} != {dest_type} ({description})"
+            record(
+                expected_property=dest_name,
+                actual_property=dest_name if isinstance(dest_prop, dict) else None,
+                expected_type=dest_type,
+                actual_type=None if actual is None else str(actual),
+                classification="missing" if not isinstance(dest_prop, dict) else "incompatible",
+                detail=(
+                    f"Derived history property {dest_name!r} type {actual} != {dest_type} "
+                    f"({description})"
+                ),
             )
 
     if "Latitude" not in dest_props or "Longitude" not in dest_props:
-        problems.append(
-            "Latitude and Longitude are not history properties. "
-            "Coordinates encoded in the source Map URL are preserved by copying Map."
-        )
+        for name in ("Latitude", "Longitude"):
+            if name not in dest_props:
+                record(
+                    expected_property=name,
+                    actual_property=None,
+                    expected_type=None,
+                    actual_type=None,
+                    classification="missing",
+                    detail=(
+                        f"{name} is not a history property. "
+                        "Coordinates encoded in the source Map URL are preserved by copying Map."
+                    ),
+                )
 
     unmapped = sorted(name for name in source_props if name not in mapped_source)
     mapped_dest = {item.history_property for item in mappings}
@@ -470,9 +551,16 @@ def build_schema_plan(source: dict[str, Any], destination: dict[str, Any]) -> Sc
         if isinstance(source_props.get(name), dict) and source_props[name].get("type") == "relation"
     ]
     if relation_sources:
-        problems.append(
-            "Source relation fields are not copied (this job does not write Machines "
-            "or Works Manager): " + ", ".join(relation_sources)
+        record(
+            expected_property=", ".join(relation_sources),
+            actual_property=", ".join(relation_sources),
+            expected_type="relation",
+            actual_type="relation",
+            classification="not-written",
+            detail=(
+                "Source relation fields are not copied (this job does not write Machines "
+                "or Works Manager): " + ", ".join(relation_sources)
+            ),
         )
 
     return SchemaPlan(
@@ -484,6 +572,7 @@ def build_schema_plan(source: dict[str, Any], destination: dict[str, Any]) -> Sc
         unmapped_source_fields=unmapped,
         untouched_destination_fields=untouched,
         schema_problems=problems,
+        schema_differences=differences,
         select_options=select_options,
     )
 
@@ -498,17 +587,23 @@ def build_history_draft(
 ) -> HistoryDraft:
     properties_in = page.get("properties") or {}
     errors: list[str] = []
+    failed_properties: list[str] = []
     warnings: list[str] = []
     properties: dict[str, Any] = {}
+
+    def fail(prop: str, message: str) -> None:
+        errors.append(message)
+        if prop not in failed_properties:
+            failed_properties.append(prop)
 
     machine_prop = properties_in.get("Machine ID")
     try:
         machine_id = _plain_text(machine_prop)
     except ValueError as exc:
         machine_id = None
-        errors.append(f"Machine ID: {exc}")
+        fail("Machine ID", f"Machine ID: {exc}")
     if not machine_id:
-        errors.append("Machine ID is missing")
+        fail("Machine ID", "Machine ID is missing")
 
     last_reported_start: str | None = None
     coordinates: tuple[float, float] | None = None
@@ -546,9 +641,10 @@ def build_history_draft(
                     continue
                 allowed = plan.select_options.get(mapping.history_property, set())
                 if selected not in allowed:
-                    errors.append(
+                    fail(
+                        mapping.history_property,
                         f"{mapping.source_property} value {selected!r} is not an option "
-                        f"on history property {mapping.history_property!r}"
+                        f"on history property {mapping.history_property!r}",
                     )
                     continue
                 properties[mapping.history_property] = {"select": {"name": selected}}
@@ -560,9 +656,12 @@ def build_history_draft(
                 if mapping.source_property == "Last Reported":
                     last_reported_start = copied["date"]["start"]
             else:
-                errors.append(f"Unsupported history type {mapping.history_type}")
+                fail(
+                    mapping.history_property,
+                    f"Unsupported history type {mapping.history_type}",
+                )
         except ValueError as exc:
-            errors.append(f"{mapping.source_property}: {exc}")
+            fail(mapping.history_property, f"{mapping.source_property}: {exc}")
 
     if machine_id and not errors:
         properties["Machine ID"] = _title(machine_id)
@@ -574,9 +673,87 @@ def build_history_draft(
         source_page_id=str(page.get("id") or ""),
         properties=properties,
         errors=errors,
+        failed_properties=failed_properties,
         warnings=warnings,
         last_reported_start=last_reported_start,
         coordinates=coordinates,
+    )
+
+
+def _schema_difference_message(differences: list[dict[str, Any]]) -> str:
+    missing = _properties_by_classification(differences, "missing")
+    incompatible = _properties_by_classification(differences, "incompatible")
+    incompatible_text = ", ".join(
+        (
+            f"{item.get('expectedProperty')} expected {item.get('expectedType')} "
+            f"actual {item.get('actualProperty')} {item.get('actualType')}"
+        )
+        for item in incompatible
+    ) or "none"
+    return (
+        "schema differences: "
+        f"missingProperties={missing or 'none'}; "
+        f"incompatibleProperties={incompatible_text}"
+    )
+
+
+def _properties_by_classification(differences: list[dict[str, Any]], classification: str) -> list:
+    if classification == "missing":
+        return [
+            item.get("expectedProperty")
+            for item in differences
+            if item.get("classification") == "missing"
+        ]
+    return [item for item in differences if item.get("classification") == classification]
+
+
+def _log_machine_failure(
+    logger: Logger,
+    *,
+    draft: HistoryDraft,
+    run_id: str,
+    destination_database_id: str,
+    exc: BaseException | None = None,
+) -> None:
+    """Log one machine failure with every diagnostic that this path actually has."""
+
+    if exc is None:
+        property_names = list(draft.failed_properties)
+        exception_type = None
+        exception_message = "; ".join(draft.errors) or "missing Machine ID"
+        notion_status = None
+        notion_error = None
+    else:
+        property_names = list(draft.properties)
+        exception_type = type(exc).__name__
+        exception_message = str(exc)
+        notion_status = getattr(exc, "status_code", None)
+        notion_error = getattr(exc, "response_body", None) or exception_message
+    property_text = ", ".join(str(name) for name in property_names) or None
+    exception_message = redact_secrets(exception_message)
+    if notion_error is not None:
+        notion_error = redact_secrets(str(notion_error))
+    message = f"machine snapshot failed: machineId={draft.machine_id or 'unknown'}"
+    if property_text:
+        message += f" property={property_text}"
+    if exception_type:
+        message += f" exceptionType={exception_type}"
+    if notion_status is not None:
+        message += f" notionStatus={notion_status}"
+    logger(
+        "ERROR",
+        message,
+        machineId=draft.machine_id,
+        machineName=draft.machine_id,
+        sourcePageId=draft.source_page_id,
+        exceptionType=exception_type,
+        exceptionMessage=exception_message,
+        notionStatus=notion_status,
+        notionError=notion_error,
+        property=property_text,
+        destinationDatabaseId=destination_database_id,
+        runId=run_id,
+        error=exception_message,
     )
 
 

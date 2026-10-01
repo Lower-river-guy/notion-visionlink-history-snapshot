@@ -26,10 +26,12 @@ class NotionError(Exception):
         *,
         status_code: int | None = None,
         database_id: str | None = None,
+        response_body: str | None = None,
     ) -> None:
         super().__init__(redact_secrets(message))
         self.status_code = status_code
         self.database_id = database_id
+        self.response_body = redact_secrets(response_body) if response_body else None
 
 
 def redact_secrets(text: str) -> str:
@@ -231,10 +233,12 @@ class NotionClient:
 
             status = response.status_code
             if status in RETRYABLE_STATUS:
+                body = _response_message(response)
                 last_error = NotionError(
-                    f"Notion HTTP {status}: {_response_message(response)}",
+                    f"Notion HTTP {status}: {body}",
                     status_code=status,
                     database_id=database_id,
+                    response_body=body,
                 )
                 if attempt == self.max_attempts:
                     raise last_error
@@ -242,10 +246,12 @@ class NotionClient:
                 self.sleeper(self._delay(attempt, retry_after))
                 continue
             if status >= 400:
+                body = _response_message(response)
                 raise NotionError(
-                    f"Notion HTTP {status}: {_response_message(response)}",
+                    f"Notion HTTP {status}: {body}",
                     status_code=status,
                     database_id=database_id,
+                    response_body=body,
                 )
             try:
                 payload = response.json()
@@ -295,4 +301,4 @@ def _response_message(response: Any) -> str:
     if not text:
         text = getattr(response, "text", "") or ""
     text = redact_secrets(str(text)).replace("\n", " ").strip()
-    return text[:300] or "no error body"
+    return text[:500] or "no error body"

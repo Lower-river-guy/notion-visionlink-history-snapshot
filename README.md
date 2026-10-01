@@ -36,50 +36,46 @@ Pacific Standard Time both resolve correctly).
 
 Unique key: **Machine ID + Snapshot Run ID**.
 
-A retry of the same scheduled slot does not create another history row. A
-later slot always does, even when the machine data is unchanged. Previous
-rows are left as they are.
+A retry of the same 10:00 AM slot does not create another history row. The
+next weekday's 10:00 AM run does, even when the machine data is unchanged.
+Previous rows are left as they are.
 
 Run id rules:
 
 1. `SNAPSHOT_RUN_ID`, when set, is used as-is. Leave it unset in production.
    It exists for a controlled rerun or a test.
-2. Scheduled runs set `SNAPSHOT_SLOT` to `06:00` or `14:00`. The run id is
-   that slot's civil time on the latest occurrence that is not in the future:
-   `2026-10-01T06:00:00_America-Los_Angeles` or
-   `2026-10-01T14:00:00_America-Los_Angeles`.
+2. Scheduled runs set `SNAPSHOT_SLOT` to `10:00`. The run id is that slot's
+   civil time on the latest occurrence that is not in the future:
+   `2026-10-01T10:00:00_America-Los_Angeles`.
    The zone name is part of the id. A fixed UTC offset is not. A task retry
    later the same day still produces the same id, so rows already written are
-   skipped and rows that failed can be created. The 6:00 AM and 2:00 PM slots
-   are different ids.
+   skipped and rows that failed can be created.
 3. A manual execution does not set `SNAPSHOT_SLOT`. Its run id is
    `manual-{CLOUD_RUN_EXECUTION}_America-Los_Angeles`. Cloud Run keeps
    `CLOUD_RUN_EXECUTION` stable across task retries and assigns a new value
    for a later execution, so a manual retry does not duplicate itself and
-   does not collide with either weekday slot. Being close to 6:00 AM or
-   2:00 PM does not turn a manual run into a slot run.
+   does not collide with the weekday slot. Being close to 10:00 AM does not
+   turn a manual run into a slot run.
 4. Without `CLOUD_RUN_EXECUTION` (a local process), a manual id uses the
    civil timestamp. Local retries are stable only when `SNAPSHOT_RUN_ID` or
    `CLOUD_RUN_EXECUTION` is set.
 
-When a scheduler is added later, use two jobs so each invocation passes its
-own `SNAPSHOT_SLOT`. A single cron cannot attach a different slot to 6:00 AM
-and 2:00 PM. Task retries are capped (`--max-retries=3`) so a failed attempt
-cannot run long enough to adopt the next day's slot id.
-`deploy/deploy-dry-run.sh` does not create those scheduler jobs.
+When a scheduler is added later, one job passes `SNAPSHOT_SLOT=10:00`.
+Task retries are capped (`--max-retries=3`) so a failed attempt cannot run
+long enough to adopt the next day's slot id. `deploy/deploy-dry-run.sh` does
+not create that scheduler job.
 
 ## Schedule
 
-Future schedule, not created by this deploy:
+Desired permanent schedule, not created or enabled by this repository:
 
-- 6:00 AM America/Los_Angeles, `SNAPSHOT_SLOT=06:00`
-- 2:00 PM America/Los_Angeles, `SNAPSHOT_SLOT=14:00`
+- 10:00 AM America/Los_Angeles, Monday–Friday, `SNAPSHOT_SLOT=10:00`
 
-Equivalent cron: `0 6,14 * * 1-5` with time zone `America/Los_Angeles`
+Cron: `0 10 * * 1-5` with time zone `America/Los_Angeles`
 (not a fixed UTC offset).
 
 Do not create or enable Cloud Scheduler from this repository's deploy script.
-The first Cloud Run revision stays `DRY_RUN=true`.
+Deployed revisions stay `DRY_RUN=true` until a controlled run says otherwise.
 
 ## Dry run
 
@@ -170,7 +166,7 @@ title is exactly `Cat VisionLink History`.
 | `SOURCE_DATABASE_ID` | Source database. Default is Cat VisionLink. |
 | `DESTINATION_DATABASE_TITLE` | Exact history title. Default `Cat VisionLink History`. |
 | `DESTINATION_DATABASE_ID` | Optional pin. The title must still match. |
-| `SNAPSHOT_SLOT` | `06:00` or `14:00` for a scheduled slot. Unset for manual runs. |
+| `SNAPSHOT_SLOT` | `10:00` for the weekday slot. Unset for manual runs. |
 | `SNAPSHOT_RUN_ID` | Optional explicit run id. Unset in production. |
 | `BUSINESS_TIMEZONE` | Default `America/Los_Angeles`. |
 | `CLOUD_RUN_EXECUTION` | Set by Cloud Run. Used for manual run ids. |

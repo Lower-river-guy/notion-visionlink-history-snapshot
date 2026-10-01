@@ -97,6 +97,15 @@ def run_job(
         destinationDatabaseTitle=result.destination_database_title,
         unmappedSourceFields=result.unmapped_source_fields,
         schemaProblems=result.schema_problems,
+        schemaDifferences=result.schema_differences,
+        missingProperties=[
+            item.get("expectedProperty")
+            for item in result.schema_differences
+            if item.get("classification") == "missing"
+        ],
+        incompatibleProperties=[
+            item for item in result.schema_differences if item.get("classification") == "incompatible"
+        ],
         failedMachineIds=result.failed_machine_ids,
         coordinatesPreservedViaMap=result.coordinates_preserved_via_map,
     )

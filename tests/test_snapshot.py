@@ -11,7 +11,7 @@ from tests.fakes import FakeNotion
 from tests.notion_fixtures import history_database, source_database, source_page
 
 LA = ZoneInfo("America/Los_Angeles")
-EXECUTION = datetime(2026, 10, 1, 13, 5, 11, tzinfo=timezone.utc)  # 06:05:11 PDT
+EXECUTION = datetime(2026, 10, 1, 17, 5, 11, tzinfo=timezone.utc)  # 10:05:11 PDT
 
 
 def _config(**overrides):
@@ -21,7 +21,7 @@ def _config(**overrides):
         destination_database_title="Cat VisionLink History",
         destination_database_id=None,
         dry_run=False,
-        snapshot_slot="06:00",
+        snapshot_slot="10:00",
         snapshot_run_id=None,
         business_timezone="America/Los_Angeles",
         notion_version="2022-06-28",
@@ -66,11 +66,11 @@ def test_property_mapping_snapshot_date_and_last_reported():
     assert "San Bernardino" in properties["Location"]["rich_text"][0]["text"]["content"]
     assert properties["Last Reported"]["date"]["start"] == "2026-10-01T08:02:00.000Z"
     snapshot = properties["Snapshot Date"]["date"]
-    assert snapshot["start"] == "2026-10-01T06:05:11-07:00"
+    assert snapshot["start"] == "2026-10-01T10:05:11-07:00"
     assert snapshot["time_zone"] == "America/Los_Angeles"
     assert snapshot["start"] != properties["Last Reported"]["date"]["start"]
     assert properties["Snapshot Run ID"]["rich_text"][0]["text"]["content"] == (
-        "2026-10-01T06:00:00_America-Los_Angeles"
+        "2026-10-01T10:00:00_America-Los_Angeles"
     )
     assert properties["Status"]["select"]["name"] == "Asset Off"
     assert properties["Map"]["url"].endswith("query=34.12243,-117.34482")
@@ -93,7 +93,7 @@ def test_missing_optional_fields_still_snapshots_machine():
     assert "Last Reported" not in properties
     assert "Location" not in properties
     assert "Hours" not in properties
-    assert properties["Snapshot Date"]["date"]["start"] == "2026-10-01T06:05:11-07:00"
+    assert properties["Snapshot Date"]["date"]["start"] == "2026-10-01T10:05:11-07:00"
     assert properties["Machine ID"]["title"][0]["text"]["content"] == "51.27"
 
 
@@ -116,13 +116,13 @@ def test_same_run_id_skips_and_later_run_id_inserts():
     assert len(fake.created) == 1
 
     later = run_snapshot(
-        _config(snapshot_slot="14:00"),
+        _config(),
         fake,
         lambda *args, **kwargs: None,
-        now=datetime(2026, 10, 1, 21, 2, tzinfo=timezone.utc),
+        now=datetime(2026, 10, 2, 17, 2, tzinfo=timezone.utc),
         pause_seconds=0,
     )
-    assert later.run_id == "2026-10-01T14:00:00_America-Los_Angeles"
+    assert later.run_id == "2026-10-02T10:00:00_America-Los_Angeles"
     assert later.history_created == 1
     assert later.duplicates_skipped == 0
     assert len(fake.created) == 2
@@ -167,47 +167,83 @@ def test_one_failed_machine_does_not_stop_the_rest():
         props["Machine ID"]["title"][0]["text"]["content"] for _db, props in fake.created
     ]
     assert created_ids == ["GOOD-1", "GOOD-2"]
-    failure_logs = [fields for severity, message, fields in logs if message == "machine snapshot failed"]
-    assert failure_logs[0]["machineId"] == "BAD"
-    assert "create failed" in failure_logs[0]["error"]
-    assert "secret_" not in failure_logs[0]["error"]
+    failure_logs = [
+        (message, fields)
+        for severity, message, fields in logs
+        if message.startswith("machine snapshot failed")
+    ]
+    message, fields = failure_logs[0]
+    assert fields["machineId"] == "BAD"
+    assert fields["machineName"] == "BAD"
+    assert fields["exceptionType"] == "NotionError"
+    assert fields["notionStatus"] == 400
+    assert "create failed" in fields["error"]
+    assert "create failed" in fields["notionError"]
+    assert "Machine ID" in fields["property"]
+    assert fields["destinationDatabaseId"] == "0357c6bd-2650-4dfc-affb-72430beaca84"
+    assert fields["runId"]
+    assert "notionStatus=400" in message
+    assert "exceptionType=NotionError" in message
+    assert "secret_" not in fields["error"]
+    assert "secret_" not in message
 
 
 def test_incompatible_select_fails_that_machine_without_a_write():
-    result, fake, _logs = _run([source_page("57.29", status="Active"), source_page("51.27")])
+    result, fake, logs = _run([source_page("57.29", status="Active"), source_page("51.27")])
 
     assert result.failed == 1
     assert result.history_created == 1
     assert result.status == "FAILURE"
     assert fake.created[0][1]["Machine ID"]["title"][0]["text"]["content"] == "51.27"
     assert any("Active" in problem for problem in result.schema_problems)
+    failure = next(
+        fields for _severity, message, fields in logs if message.startswith("machine snapshot failed")
+    )
+    assert failure["machineId"] == "57.29"
+    assert failure["property"] == "Status"
+    assert failure["notionStatus"] is None
+    assert failure["exceptionType"] is None
+    assert "Status" in failure["exceptionMessage"]
+    assert "property=Status" in next(
+        message for _severity, message, _fields in logs if message.startswith("machine snapshot failed")
+    )
 
 
 def test_run_id_slots_manual_runs_and_dst():
-    january = datetime(2026, 1, 15, 14, 0, tzinfo=timezone.utc)  # 06:00 PST
-    july = datetime(2026, 7, 15, 13, 0, tzinfo=timezone.utc)  # 06:00 PDT
+    from src.snapshot import SnapshotFatal
+
+    january = datetime(2026, 1, 15, 18, 0, tzinfo=timezone.utc)  # 10:00 PST
+    july = datetime(2026, 7, 15, 17, 0, tzinfo=timezone.utc)  # 10:00 PDT
     assert (
-        resolve_run_id(january, slot="06:00", execution="exec", override=None)
-        == "2026-01-15T06:00:00_America-Los_Angeles"
+        resolve_run_id(january, slot="10:00", execution="exec", override=None)
+        == "2026-01-15T10:00:00_America-Los_Angeles"
     )
     assert (
-        resolve_run_id(july, slot="06:00", execution="exec", override=None)
-        == "2026-07-15T06:00:00_America-Los_Angeles"
+        resolve_run_id(july, slot="10:00", execution="exec", override=None)
+        == "2026-07-15T10:00:00_America-Los_Angeles"
     )
 
-    afternoon = datetime(2026, 10, 1, 21, 0, tzinfo=timezone.utc)  # 14:00 PDT
-    morning_id = resolve_run_id(afternoon, slot="06:00", execution="exec", override=None)
-    afternoon_id = resolve_run_id(afternoon, slot="14:00", execution="exec", override=None)
-    assert morning_id == "2026-10-01T06:00:00_America-Los_Angeles"
-    assert afternoon_id == "2026-10-01T14:00:00_America-Los_Angeles"
-    assert morning_id != afternoon_id
+    slot_time = datetime(2026, 10, 1, 17, 0, tzinfo=timezone.utc)  # 10:00 PDT
+    slot_id = resolve_run_id(slot_time, slot="10:00", execution="exec", override=None)
+    assert slot_id == "2026-10-01T10:00:00_America-Los_Angeles"
+    before_slot = datetime(2026, 10, 1, 16, 30, tzinfo=timezone.utc)  # 09:30 PDT
+    assert (
+        resolve_run_id(before_slot, slot="10:00", execution="exec", override=None)
+        == "2026-09-30T10:00:00_America-Los_Angeles"
+    )
 
-    # A retry hours later still anchors to the slot that was requested.
-    later = afternoon + timedelta(hours=5)
-    assert resolve_run_id(later, slot="14:00", execution="exec-2", override=None) == afternoon_id
+    # A retry hours later still anchors to the same 10:00 slot.
+    later = slot_time + timedelta(hours=5)
+    assert resolve_run_id(later, slot="10:00", execution="exec-2", override=None) == slot_id
+    try:
+        resolve_run_id(slot_time, slot="14:00", execution="exec", override=None)
+    except SnapshotFatal:
+        pass
+    else:
+        raise AssertionError("14:00 is not a scheduled slot")
 
-    # Off-schedule manual runs do not use a slot id, and retries share the execution name.
-    manual_now = datetime(2026, 10, 1, 17, 0, tzinfo=timezone.utc)  # 10:00 PDT, near neither edge
+    # Off-schedule manual runs do not use the 10:00 slot id, and retries share the execution name.
+    manual_now = datetime(2026, 10, 1, 17, 5, tzinfo=timezone.utc)  # 10:05 PDT
     manual = resolve_run_id(manual_now, slot=None, execution="exec-manual", override=None)
     retried = resolve_run_id(
         manual_now + timedelta(hours=2),
@@ -216,18 +252,46 @@ def test_run_id_slots_manual_runs_and_dst():
         override=None,
     )
     later_manual = resolve_run_id(manual_now, slot=None, execution="exec-later", override=None)
-    near_slot = resolve_run_id(
-        datetime(2026, 10, 1, 13, 5, tzinfo=timezone.utc),
-        slot=None,
-        execution="exec-manual",
-        override=None,
-    )
     assert manual == "manual-exec-manual_America-Los_Angeles"
     assert retried == manual
     assert later_manual != manual
-    assert near_slot == manual
-    assert manual != morning_id
-    assert "06:00:00" not in manual
+    assert manual != slot_id
+    assert "10:00:00" not in manual
     assert "-07:00" not in manual
-    assert "-08:00" not in morning_id
-    assert "-07:00" not in afternoon_id
+    assert "-08:00" not in slot_id
+    assert "-07:00" not in slot_id
+
+
+def test_schema_difference_log_names_expected_and_actual_types():
+    history = history_database()
+    history["properties"]["Location"]["type"] = "number"
+    fake = FakeNotion(source_database(), history)
+    fake.pages[fake.source["id"]] = [source_page("57.29")]
+    logs = []
+    run_snapshot(
+        _config(),
+        fake,
+        lambda severity, message, **fields: logs.append((severity, message, fields)),
+        now=EXECUTION,
+        pause_seconds=0,
+    )
+
+    warnings = [
+        (message, fields)
+        for severity, message, fields in logs
+        if severity == "WARNING" and message.startswith("schema differences")
+    ]
+    assert warnings
+    message, fields = warnings[0]
+    location = next(
+        item for item in fields["incompatibleProperties"] if item["expectedProperty"] == "Location"
+    )
+    assert location["actualProperty"] == "Location"
+    assert location["expectedType"] == "rich_text"
+    assert location["actualType"] == "number"
+    assert "Location" in message
+    assert "expected rich_text" in message
+    assert "actual Location number" in message
+    assert "Latitude" in fields["missingProperties"]
+    assert "Longitude" in fields["missingProperties"]
+    assert fields["destinationDatabaseId"] == "0357c6bd-2650-4dfc-affb-72430beaca84"

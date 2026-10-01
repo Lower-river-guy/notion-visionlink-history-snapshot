@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
-from src.main import run_job
+from src.main import emit, run_job
 from src.snapshot import format_summary
 from tests.fakes import FakeNotion
 from tests.notion_fixtures import history_database, source_database, source_page
@@ -37,14 +38,14 @@ def test_success_returns_zero_and_summary_shape():
     code = run_job(
         _config(),
         fake,
-        now=datetime(2026, 10, 1, 13, 0, tzinfo=timezone.utc),
+        now=datetime(2026, 10, 1, 17, 0, tzinfo=timezone.utc),
         logger=logger,
     )
 
     assert code == 0
     finished = captured["snapshot finished"]
     assert finished["version"] == "0.01.00"
-    assert finished["runId"] == "2026-10-01T06:00:00_America-Los_Angeles"
+    assert finished["runId"] == "2026-10-01T10:00:00_America-Los_Angeles"
     assert finished["sourceRecords"] == 1
     assert finished["historyCreated"] == 1
     assert finished["duplicatesSkipped"] == 0
@@ -55,10 +56,10 @@ def test_success_returns_zero_and_summary_shape():
     from src.snapshot import run_snapshot
 
     result = run_snapshot(
-        _config(dry_run=True, snapshot_slot="14:00"),
+        _config(dry_run=True),
         fake,
         lambda *args, **kwargs: None,
-        now=datetime(2026, 10, 1, 21, 0, tzinfo=timezone.utc),
+        now=datetime(2026, 10, 2, 17, 0, tzinfo=timezone.utc),
         pause_seconds=0,
     )
     assert result.would_create == 1
@@ -67,3 +68,15 @@ def test_success_returns_zero_and_summary_shape():
     assert "Version: 0.01.00" in text
     assert "Status: SUCCESS" in text
     assert "Writes performed: 0" in text
+
+
+def test_emit_redacts_token_like_authorization_header(capsys):
+    token = "ntn_supersecrettokenvalue"
+    header = f"Authorization: Bearer {token}"
+    emit("ERROR", header, notionError=header, authorization=header)
+    captured = capsys.readouterr().out
+    assert token not in captured
+    assert "Bearer [redacted]" in captured
+    record = json.loads(captured)
+    assert "authorization" not in record
+    assert token not in record["notionError"]

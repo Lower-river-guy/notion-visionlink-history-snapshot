@@ -137,6 +137,22 @@ def test_error_text_redacts_token():
     assert "[redacted]" in str(caught.value)
 
 
+def test_authorization_header_value_is_redacted():
+    token = "ntn_supersecrettokenvalue"
+    header = f"Authorization: Bearer {token}"
+    client, _session, _sleeps = _client(
+        [FakeResponse(400, {"message": header}, text=header)]
+    )
+    with pytest.raises(NotionError) as caught:
+        client.retrieve_database("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+    rendered = str(caught.value)
+    assert token not in rendered
+    assert caught.value.response_body is not None
+    assert token not in caught.value.response_body
+    assert "Bearer [redacted]" in rendered
+    assert caught.value.status_code == 400
+
+
 def test_create_refuses_source_database_and_relations():
     client, session, _sleeps = _client([])
     source = "3db284de-cb43-80ed-9b6f-fc20d6cc20eb"
