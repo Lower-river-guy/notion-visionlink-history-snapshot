@@ -1,0 +1,91 @@
+# Tests on every push and pull request.
+#
+# A push to main or cursor/visionlink-history-snapshot-3dab submits
+# cloudbuild.yaml when these repository Actions secrets exist:
+#
+#   GCP_WORKLOAD_IDENTITY_PROVIDER=projects/564809734796/locations/global/workloadIdentityPools/github-visionlink/providers/github
+#   GCP_SERVICE_ACCOUNT=github-visionlink-deployer@work-projects-486912.iam.gserviceaccount.com
+#
+# GitHub authenticates with Workload Identity Federation and impersonates
+# github-visionlink-deployer. The runtime account
+# visionlink-history-runner@work-projects-486912.iam.gserviceaccount.com
+# is not the deployment identity.
+#
+# The build updates Cloud Run job notion-visionlink-history-snapshot and keeps:
+#
+#   NOTION_TOKEN=Notion_Google_Cloud_Sync:latest
+#   DRY_RUN=true
+#
+# It does not set DRY_RUN=false, does not execute the job, and does not create
+# Cloud Scheduler. The desired schedule remains 10:00 AM America/Los_Angeles,
+# Monday-Friday, cron 0 10 * * 1-5, and stays undeployed.
+#
+# The deploy job uses the GitHub environment "gcp". This repository's immutable
+# OIDC subject includes the owner id, repository id, and branch ref. On this
+# branch that subject is 130 bytes, and Google Cloud rejects google.subject
+# above 127. Referencing an environment replaces the branch ref in the subject
+# and keeps it under the limit. The pool condition remains this repository only.
+#
+# One-time setup, from an authenticated gcloud session:
+#   bash deploy/bootstrap-gcp-auth.sh
+
+name: dry-run deploy
+
+on:
+  push:
+    branches:
+      - cursor/visionlink-history-snapshot-3dab
+      - main
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Run tests
+        run: python -m pytest
+
+  deploy:
+    needs: test
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/cursor/visionlink-history-snapshot-3dab' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    environment: gcp
+    permissions:
+      contents: read
+      id-token: write
+      deployments: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check deploy credentials
+        id: creds
+        env:
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${GCP_WORKLOAD_IDENTITY_PROVIDER}" && -n "${GCP_SERVICE_ACCOUNT}" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "Cloud Build was not submitted from GitHub Actions."
+            echo "GCP_WORKLOAD_IDENTITY_PROVIDER or GCP_SERVICE_ACCOUNT is unset."
+            echo "Run deploy/bootstrap-gcp-auth.sh once, then store the printed values as those Actions secrets."
+          fi
+      - name: Authenticate to Google Cloud
+        if: steps.creds.outputs.available == 'true'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+      - name: Set up gcloud
+        if: steps.creds.outputs.available == 'true'
+        uses: google-github-actions/setup-gcloud@v2
+      - name: Submit dry-run Cloud Build
+        if: steps.creds.outputs.available == 'true'
+        run: gcloud builds submit --config cloudbuild.yaml --project work-projects-486912 --service-account "projects/work-projects-486912/serviceAccounts/github-visionlink-deployer@work-projects-486912.iam.gserviceaccount.com"
