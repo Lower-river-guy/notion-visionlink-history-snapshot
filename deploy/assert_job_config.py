@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Confirm a Cloud Run Job description matches the dry-run VisionLink snapshot.
+"""Confirm a Cloud Run Job description matches the production VisionLink snapshot.
 
 Reads `gcloud run jobs describe --format=json` on stdin. Prints confirmation
-lines and exits non-zero when the job would not stay read-only on the source
-and append-only on the history database. Never prints secret values.
+lines and exits non-zero when the resting job is not DRY_RUN=false, or when
+the source, history database, secret, or runtime service account differ.
+Never prints secret values.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ EXPECTED_DESTINATION = "0357c6bd-2650-4dfc-affb-72430beaca84"
 EXPECTED_DESTINATION_TITLE = "Cat VisionLink History"
 EXPECTED_TIMEZONE = "America/Los_Angeles"
 EXPECTED_PLAIN = {
-    "DRY_RUN": "true",
+    "DRY_RUN": "false",
     "SOURCE_DATABASE_ID": EXPECTED_SOURCE,
     "DESTINATION_DATABASE_ID": EXPECTED_DESTINATION,
     "DESTINATION_DATABASE_TITLE": EXPECTED_DESTINATION_TITLE,
@@ -130,7 +131,7 @@ def main() -> int:
     except ConfigMismatch as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
-    print("confirmed: DRY_RUN=true")
+    print("confirmed: DRY_RUN=false")
     print(f"confirmed: {EXPECTED_SECRET_ENV}={EXPECTED_SECRET}:{EXPECTED_SECRET_VERSION}")
     print(f"confirmed: service account {EXPECTED_SERVICE_ACCOUNT}")
     print(f"confirmed: source {EXPECTED_SOURCE} read-only")

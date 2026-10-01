@@ -8,7 +8,7 @@ variables only:
 
 https://cloud.google.com/run/docs/reference/rest/v2/projects.locations.jobs/run
 
-The resting job stays DRY_RUN=true and does not set SNAPSHOT_SLOT. A scheduled
+The resting job is DRY_RUN=false and does not set SNAPSHOT_SLOT. A scheduled
 execution sets DRY_RUN=false and SNAPSHOT_SLOT=10:00 for that execution only.
 """
 
@@ -38,7 +38,7 @@ OAUTH_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 DESCRIPTION = (
     "Weekday 10:00 America/Los_Angeles production snapshot. "
     "Execution override sets DRY_RUN=false and SNAPSHOT_SLOT=10:00. "
-    "The Cloud Run job stays DRY_RUN=true."
+    "The resting Cloud Run job is DRY_RUN=false."
 )
 RUN_URI = (
     f"https://run.googleapis.com/v2/projects/{PROJECT}/locations/{REGION}"

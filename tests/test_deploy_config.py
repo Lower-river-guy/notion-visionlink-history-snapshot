@@ -1,4 +1,4 @@
-"""Deploy config stays on the live dry-run mapping."""
+"""Deploy config stays on the production resting mapping."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ def _job(secret_item: dict | None = None, service_account: str = RUNNER) -> dict
             },
         }
     env = [
-        {"name": "DRY_RUN", "value": "true"},
+        {"name": "DRY_RUN", "value": "false"},
         {"name": "SOURCE_DATABASE_ID", "value": SOURCE},
         {"name": "DESTINATION_DATABASE_ID", "value": DESTINATION},
         {"name": "DESTINATION_DATABASE_TITLE", "value": "Cat VisionLink History"},
@@ -62,7 +62,7 @@ def _job(secret_item: dict | None = None, service_account: str = RUNNER) -> dict
 def test_assert_accepts_live_secret_mapping():
     result = _run_assert(_job())
     assert result.returncode == 0, result.stderr
-    assert "confirmed: DRY_RUN=true" in result.stdout
+    assert "confirmed: DRY_RUN=false" in result.stdout
     assert f"confirmed: {MAPPING}" in result.stdout
     assert f"confirmed: service account {RUNNER}" in result.stdout
     assert "read-only" in result.stdout
@@ -125,7 +125,7 @@ def test_assert_rejects_literal_token_without_echoing_it():
     assert literal not in result.stderr
 
 
-def test_assert_rejects_dry_run_false_and_wrong_runner():
+def test_assert_rejects_dry_run_true_and_wrong_runner():
     wrong_runner = _job(
         service_account="notion-visionlink-history-runner@work-projects-486912.iam.gserviceaccount.com"
     )
@@ -133,9 +133,9 @@ def test_assert_rejects_dry_run_false_and_wrong_runner():
     assert runner_result.returncode == 1
     assert "service account" in runner_result.stderr
 
-    dry_run_false = _job()
-    dry_run_false["spec"]["template"]["spec"]["template"]["spec"]["containers"][0]["env"][0]["value"] = "false"
-    dry_result = _run_assert(dry_run_false)
+    dry_run_true = _job()
+    dry_run_true["spec"]["template"]["spec"]["template"]["spec"]["containers"][0]["env"][0]["value"] = "true"
+    dry_result = _run_assert(dry_run_true)
     assert dry_result.returncode == 1
     assert "DRY_RUN" in dry_result.stderr
 
@@ -148,7 +148,8 @@ def test_deploy_files_keep_live_mapping():
 
     for text in (script, build):
         assert MAPPING in text
-        assert "DRY_RUN=true" in text
+        assert "DRY_RUN=false" in text
+        assert "DRY_RUN=true" not in text
         assert RUNNER.split("@")[0] in text
         assert "@cloudbuild.gserviceaccount.com" in text
         assert "notion-visionlink-history-runner" not in text
@@ -163,18 +164,21 @@ def test_deploy_files_keep_live_mapping():
     assert "id-token: write" in workflow
     assert "environment: gcp" in workflow
     assert "developer.gserviceaccount.com" not in script
-    assert "_DRY_RUN: \"false\"" not in build
-    assert "_DRY_RUN=false" not in workflow
+    assert '_DRY_RUN: "false"' in build
+    assert "_DRY_RUN=true" not in workflow
     assert "deploy/ensure_weekday_scheduler.sh" in workflow
     assert "gcloud run jobs execute" not in workflow
+    assert "gcloud run jobs execute" not in script
     assert "gcloud run jobs describe notion-visionlink-history-snapshot" in workflow
     assert "gcloud builds submit --config cloudbuild.yaml --project work-projects-486912" in workflow
 
-    env_lines = [line for line in script.splitlines() if "ENV_VARS=" in line or "set-env-vars" in line]
+    env_lines = [line for line in script.splitlines() if "ENV_VARS=" in line]
     assert env_lines
     for line in env_lines:
-        assert "DRY_RUN=false" not in line
-    assert '!= "true"' in script
+        assert "DRY_RUN=false" in line
+        assert "DRY_RUN=true" not in line
+    assert "--set-env-vars" in script
+    assert '!= "false"' in script
 
     assert 'env.get("NOTION_TOKEN")' in config
     assert "Notion_Google_Cloud_Sync" not in config
@@ -259,8 +263,8 @@ def test_diagnostic_workflow_is_manual_and_restores_dry_run():
     assert "us-west1" in text
     assert "notion-visionlink-history-snapshot" in text
     assert text.count("gcloud run jobs execute") == 1
-    assert "--update-env-vars=DRY_RUN=false" in text
-    assert "--update-env-vars=DRY_RUN=true" in text
+    assert text.count("--update-env-vars=DRY_RUN=false") == 2
+    assert "--update-env-vars=DRY_RUN=true" not in text
     assert "--max-retries=0" in text
     assert "--max-retries=3" in text
     assert "if: always()" in text

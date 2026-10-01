@@ -1,4 +1,4 @@
-"""The one weekday scheduler overrides a single execution and leaves the job dry-run."""
+"""The one weekday scheduler overrides a single execution and leaves the job at rest."""
 
 from __future__ import annotations
 
@@ -170,4 +170,5 @@ def test_ensure_script_does_not_execute_and_uses_the_override():
     assert "bash deploy/ensure_weekday_scheduler.sh" in workflow
     assert "gcloud scheduler" not in diagnostic
     assert "workflow_dispatch:" in diagnostic
-    assert "--update-env-vars=DRY_RUN=true" in diagnostic
+    assert "--update-env-vars=DRY_RUN=false" in diagnostic
+    assert "--update-env-vars=DRY_RUN=true" not in diagnostic
