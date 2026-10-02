@@ -133,6 +133,13 @@ deployer lacks `iam.serviceAccounts.getIamPolicy`.
 history schema, builds the history pages, validates them, and logs what it
 would create. It does not create or modify pages.
 
+The manual workflow `.github/workflows/diagnostic-run.yml` is
+`workflow_dispatch` only. It runs the deployed job once with an execution
+override of `DRY_RUN=true`, then checks that the execution spec is
+`DRY_RUN=true` before waiting for the container. If that check fails, it
+cancels the execution. It does not update the job template and does not
+trigger Cloud Scheduler. The resting job stays `DRY_RUN=false`.
+
 ```bash
 export NOTION_TOKEN=...   # do not commit this
 export DRY_RUN=true

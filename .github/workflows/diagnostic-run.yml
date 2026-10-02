@@ -1,11 +1,12 @@
-# One-shot dry-run verification for notion-visionlink-history-snapshot.
+# Manual dry-run for notion-visionlink-history-snapshot.
 #
-# This branch copy is not for merge. workflow_dispatch only. It does not run
-# on push, pull request, or schedule. It executes the deployed job once with
-# an execution override of DRY_RUN=true and does not update the job template,
-# image, service account, secret, database ids, max retries, or scheduler.
-# The resting job stays DRY_RUN=false. If the execution spec is not
-# DRY_RUN=true, the execution is cancelled and nothing else is run.
+# workflow_dispatch only. It does not run on push, pull request, or schedule.
+# It executes the deployed job once with an execution override of DRY_RUN=true
+# and does not update the job template, image, service account, secret,
+# database ids, max retries, or scheduler. The resting job stays DRY_RUN=false.
+# Immediately after execute returns, and before waiting for the container,
+# the execution spec is checked. If DRY_RUN is not true, the execution is
+# cancelled and the workflow fails.
 
 name: diagnostic run
 

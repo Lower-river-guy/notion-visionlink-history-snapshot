@@ -169,6 +169,8 @@ def test_ensure_script_does_not_execute_and_uses_the_override():
     assert "scheduler-service-agent-actas" not in script
     assert "bash deploy/ensure_weekday_scheduler.sh" in workflow
     assert "gcloud scheduler" not in diagnostic
+    assert "gcloud scheduler jobs run" not in diagnostic
     assert "workflow_dispatch:" in diagnostic
-    assert "--update-env-vars=DRY_RUN=false" in diagnostic
-    assert "--update-env-vars=DRY_RUN=true" not in diagnostic
+    assert "--update-env-vars=DRY_RUN=true" in diagnostic
+    assert "--update-env-vars=DRY_RUN=false" not in diagnostic
+    assert "gcloud run jobs update" not in diagnostic

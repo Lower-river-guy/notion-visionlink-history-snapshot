@@ -248,7 +248,7 @@ def test_bootstrap_wif_is_repository_scoped_and_does_not_deploy():
         assert len(value) <= limit
 
 
-def test_diagnostic_workflow_is_manual_and_restores_dry_run():
+def test_diagnostic_workflow_is_manual_and_dry_run_override():
     text = (ROOT / ".github" / "workflows" / "diagnostic-run.yml").read_text()
     assert "workflow_dispatch:" in text
     assert "\n  push:" not in text
@@ -263,10 +263,13 @@ def test_diagnostic_workflow_is_manual_and_restores_dry_run():
     assert "us-west1" in text
     assert "notion-visionlink-history-snapshot" in text
     assert text.count("gcloud run jobs execute") == 1
-    assert text.count("--update-env-vars=DRY_RUN=false") == 2
-    assert "--update-env-vars=DRY_RUN=true" not in text
-    assert "--max-retries=0" in text
-    assert "--max-retries=3" in text
+    assert text.count("--update-env-vars=DRY_RUN=true") == 1
+    assert "--update-env-vars=DRY_RUN=false" not in text
+    assert "gcloud run jobs update" not in text
+    assert "--max-retries" not in text
+    assert "executions\", \"cancel\"" in text
+    assert "execution override is not DRY_RUN=true" in text
+    assert text.index("execution override is not DRY_RUN=true") < text.index("sleep 15")
     assert "if: always()" in text
     assert "run.googleapis.com/execution_name" in text
     assert "upload-artifact@v4" in text
