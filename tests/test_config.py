@@ -7,7 +7,7 @@ MACHINES_DATABASE = "8248e735-8458-4a00-9b41-cbe1eff6b975"
 
 
 def test_machines_database_id_is_the_database_page_id():
-    assert VERSION == "0.01.03"
+    assert VERSION == "0.01.04"
     assert MACHINES_DATABASE_ID == MACHINES_DATABASE
     assert MACHINES_DATABASE_ID != MACHINES_DATA_SOURCE_ID
 

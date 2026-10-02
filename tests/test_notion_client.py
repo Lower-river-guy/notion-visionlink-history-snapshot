@@ -189,3 +189,33 @@ def test_create_refuses_source_and_allows_only_history_machine_relation():
     assert session.calls[0]["json"]["properties"]["Machine"] == {
         "relation": [{"id": "machine-page"}]
     }
+
+
+def test_machine_number_update_allows_only_the_three_hour_fields():
+    client, session, _sleeps = _client([FakeResponse(200, {"id": "machine-page"})])
+    payload = {
+        "Hours This Week": {"number": 12.5},
+        "Hours Last Week": {"number": None},
+        "Hours This Month": {"number": 40.0},
+    }
+    updated = client.update_machine_numbers("3e8284decb43811a95acd7d9b0f23557", payload)
+    assert updated["id"] == "machine-page"
+    assert session.calls[0]["method"] == "PATCH"
+    assert session.calls[0]["url"].endswith("/v1/pages/3e8284de-cb43-811a-95ac-d7d9b0f23557")
+    assert session.calls[0]["json"] == {"properties": payload}
+
+    with pytest.raises(NotionError, match="only"):
+        client.update_machine_numbers(
+            "3e8284de-cb43-811a-95ac-d7d9b0f23557",
+            {"Hours": {"number": 1}},
+        )
+    with pytest.raises(NotionError, match="non-number"):
+        client.update_machine_numbers(
+            "3e8284de-cb43-811a-95ac-d7d9b0f23557",
+            {
+                "Hours This Week": {"rich_text": []},
+                "Hours Last Week": {"number": None},
+                "Hours This Month": {"number": None},
+            },
+        )
+    assert len(session.calls) == 1

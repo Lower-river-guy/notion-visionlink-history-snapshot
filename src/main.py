@@ -6,10 +6,12 @@ import json
 import sys
 from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from src.config import VERSION, Config, ConfigError, load_config
 from src.notion_client import NotionClient, redact_secrets
 from src.snapshot import SnapshotFatal, format_summary, run_snapshot
+from src.utilization import UtilizationFatal, run_utilization
 
 _REDACT_KEYS = {"notion_token", "authorization", "token", "secret"}
 
@@ -76,6 +78,34 @@ def run_job(
 
     summary = format_summary(result)
     print(summary, flush=True)
+    moment = now or datetime.now(ZoneInfo(config.business_timezone))
+    try:
+        utilization = run_utilization(
+            config,
+            client,
+            log,
+            now=moment,
+            destination_database_id=result.destination_database_id,
+        )
+    except UtilizationFatal as exc:
+        log(
+            "ERROR",
+            str(exc),
+            status="FAILURE",
+            databaseRole=exc.database_role,
+            databaseId=exc.database_id,
+            version=config.version,
+        )
+        print(str(exc), flush=True)
+        return 1
+    if utilization.failed:
+        log(
+            "ERROR",
+            "utilization updates failed",
+            status="FAILURE",
+            failed=utilization.failed,
+            version=config.version,
+        )
     log(
         "INFO" if result.status == "SUCCESS" else "ERROR",
         "snapshot finished",
@@ -109,7 +139,9 @@ def run_job(
         failedMachineIds=result.failed_machine_ids,
         coordinatesPreservedViaMap=result.coordinates_preserved_via_map,
     )
-    return 0 if result.status == "SUCCESS" else 1
+    if result.status != "SUCCESS" or utilization.failed:
+        return 1
+    return 0
 
 
 def main() -> int:

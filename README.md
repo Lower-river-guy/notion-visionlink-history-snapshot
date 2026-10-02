@@ -5,27 +5,57 @@ Cat VisionLink History. Each weekday snapshot answers questions such as where
 a machine was, which job it was on, what its hours were, and when VisionLink
 last reported, at a specific copy time.
 
-Version: `0.01.03`
+Version: `0.01.04`
 
 ## The only write path
 
 Read **Cat VisionLink** (database `3db284de-cb43-80ed-9b6f-fc20d6cc20eb`).
 Append new pages to **Cat VisionLink History** (looked up by exact title).
 
-This job does not update, archive, or delete anything. It does not update
-Machines pages. It does not write to Works Manager Project List. It does not
-change the source database. It does not delete historical rows, including when
-a retry finds rows it already created.
+History rows are still append-only. After the snapshot, the same run writes
+three number properties on each Machines page: **Hours This Week**, **Hours
+Last Week**, and **Hours This Month**. It does not update any other Machines
+property. It does not write to Works Manager Project List. It does not change
+the source database. It does not delete historical rows, including when a
+retry finds rows it already created. `DRY_RUN=true` logs the three values
+and does not patch Machines.
 
 Each new history page sets **Machine** when Machines
 (database `8248e735-8458-4a00-9b41-cbe1eff6b975`) has exactly one record whose
 **Machine ID** title equals the snapshot Machine ID. The Machines data source
 id `241a2acd-f833-410a-9c0a-99e376add55e` is not the API query target. Notion
 fills **VisionLink History** on that Machines page because the relation is
-two-way. This job never edits the Machines page. It does not set **Related to
+two-way. The utilization step then sets only the three hour-delta numbers
+on that Machines page. It does not set **Related to
 Projects (VisionLink History)**. Source **Assigned Contact** and **Works
 Manager Project** are not copied. A missing or duplicate Machines match fails
 that record only.
+
+## Machine hour deltas
+
+The three Machines numbers are hour-meter deltas from **Cat VisionLink
+History**, not sums of the readings and not Notion formulas. Periods use
+`America/Los_Angeles` and are half-open:
+
+- **Hours This Week**: Monday 00:00 through the next Monday 00:00
+- **Hours Last Week**: the previous Monday 00:00 through this Monday 00:00
+- **Hours This Month**: the first of the month 00:00 through the next month 00:00
+
+Each value is the latest meter inside the period minus the latest meter
+strictly before the period starts. It is blank when either reading is
+missing, when two rows that share a timestamp or Snapshot Run ID disagree,
+or when the meter decreases between those readings. A zero delta is written
+as `0`. Results are rounded half up to one decimal place.
+
+`DRY_RUN=true` still calculates the values and logs a sample. It does not
+patch Machines.
+
+Notion also has formula and rollup properties from an earlier pass (`Hours
+Gained`, `Days Observed`, `Hours per Day`, `Utilization`, `Latest Snapshot`,
+`First Snapshot`, `Latest Hours`, `Earliest Hours`, `Snapshot Count`). The
+job does not read or write those. There is no `Weekly Hours Added` property
+in this repository. That name was a Notion placeholder and was renamed to
+the formula `Hours Gained`; it was left in place.
 
 ## Snapshot Date and Last Reported
 
@@ -197,8 +227,11 @@ title is exactly `Cat VisionLink History`.
 
 ## Safety rules
 
-- Read Cat VisionLink. Append to Cat VisionLink History. Nothing else.
-- Do not write to Machines or Works Manager Project List.
+- Read Cat VisionLink. Append to Cat VisionLink History. Then set only
+  **Hours This Week**, **Hours Last Week**, and **Hours This Month** on
+  Machines.
+- Do not write any other Machines property, and do not write Works Manager
+  Project List.
 - Do not edit, archive, delete, or rename anything on the source.
 - Do not delete or update historical snapshots.
 - Do not put the Notion token in source, images, logs, or git.
@@ -220,6 +253,7 @@ src/main.py            entrypoint, structured logs, exit status
 src/config.py          environment and version
 src/notion_client.py   pagination, retries, write guards
 src/snapshot.py        mapping, run id, dry run
+src/utilization.py     week and month hour-meter deltas
 src/models.py          result and mapping records
 tests/                 unit tests
 deploy/deploy-dry-run.sh

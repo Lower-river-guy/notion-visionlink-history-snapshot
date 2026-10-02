@@ -90,6 +90,9 @@ def machines_database():
         "properties": {
             "Machine ID": {"type": "title", "title": {}},
             "VisionLink History": {"type": "relation", "relation": {}},
+            "Hours This Week": {"type": "number", "number": {}},
+            "Hours Last Week": {"type": "number", "number": {}},
+            "Hours This Month": {"type": "number", "number": {}},
         },
     }
 
