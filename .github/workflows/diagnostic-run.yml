@@ -1,10 +1,11 @@
-# Manual production diagnostic for notion-visionlink-history-snapshot.
+# One-shot dry-run verification for notion-visionlink-history-snapshot.
 #
-# workflow_dispatch only. It does not run on push, pull request, or schedule.
-# It verifies the job exists, executes it once with max-retries=0, then
-# restores DRY_RUN=false and max-retries=3. The resting job is already
-# DRY_RUN=false. It does not change the image, service account, secret
-# mapping, or database ids, and it does not create Cloud Scheduler.
+# This branch copy is not for merge. workflow_dispatch only. It does not run
+# on push, pull request, or schedule. It executes the deployed job once with
+# an execution override of DRY_RUN=true and does not update the job template,
+# image, service account, secret, database ids, max retries, or scheduler.
+# The resting job stays DRY_RUN=false. If the execution spec is not
+# DRY_RUN=true, the execution is cancelled and nothing else is run.
 
 name: diagnostic run
 
@@ -88,21 +89,15 @@ jobs:
             exit 1
           fi
 
-      - name: Execute once
+      - name: Execute once with DRY_RUN override
         id: execute
         run: |
           set -euo pipefail
-          gcloud run jobs update "${JOB}" \
-            --project="${PROJECT}" \
-            --region="${REGION}" \
-            --update-env-vars=DRY_RUN=false \
-            --max-retries=0 \
-            --quiet
-          echo "armed=true" >> "$GITHUB_OUTPUT"
-
+          echo "Job template is not updated. Execution override is DRY_RUN=true."
           EXECUTION="$(gcloud run jobs execute "${JOB}" \
             --project="${PROJECT}" \
             --region="${REGION}" \
+            --update-env-vars=DRY_RUN=true \
             --format='value(metadata.name)' \
             --quiet)"
           echo "execution=${EXECUTION}" >> "$GITHUB_OUTPUT"
@@ -111,6 +106,54 @@ jobs:
             echo "ERROR: execute did not return an execution name. Not executing again." >&2
             exit 1
           fi
+          export EXECUTION
+          python3 - << 'PY'
+          import json, os, subprocess, sys
+          execution = os.environ["EXECUTION"]
+          raw = subprocess.check_output([
+              "gcloud", "run", "jobs", "executions", "describe", execution,
+              "--project", os.environ["PROJECT"],
+              "--region", os.environ["REGION"],
+              "--format", "json",
+          ], text=True)
+          described = json.loads(raw)
+          values = []
+
+          def walk(node):
+              if isinstance(node, dict):
+                  containers = node.get("containers")
+                  if isinstance(containers, list):
+                      for container in containers:
+                          if not isinstance(container, dict):
+                              continue
+                          env = container.get("env")
+                          if not isinstance(env, list):
+                              continue
+                          dry = [
+                              item.get("value")
+                              for item in env
+                              if isinstance(item, dict) and item.get("name") == "DRY_RUN"
+                          ]
+                          if dry:
+                              values.append(dry[-1])
+                  for value in node.values():
+                      walk(value)
+              elif isinstance(node, list):
+                  for value in node:
+                      walk(value)
+
+          walk(described)
+          print(f"execution DRY_RUN values: {values}")
+          if not values or any(value != "true" for value in values):
+              print("ERROR: execution override is not DRY_RUN=true. Cancelling.", file=sys.stderr)
+              subprocess.run([
+                  "gcloud", "run", "jobs", "executions", "cancel", execution,
+                  "--project", os.environ["PROJECT"],
+                  "--region", os.environ["REGION"],
+                  "--quiet",
+              ], check=False)
+              sys.exit(1)
+          PY
 
           COMPLETED=""
           for _ in $(seq 1 160); do
@@ -140,18 +183,12 @@ jobs:
             exit 1
           fi
 
-      - name: Restore production config
+      - name: Confirm resting DRY_RUN is still false
         id: restore
-        if: always() && steps.execute.outputs.armed == 'true'
+        if: always()
         run: |
           set -euo pipefail
-          echo "Restoring DRY_RUN=false and max-retries=3"
-          gcloud run jobs update "${JOB}" \
-            --project="${PROJECT}" \
-            --region="${REGION}" \
-            --update-env-vars=DRY_RUN=false \
-            --max-retries=3 \
-            --quiet
+          echo "Job template was not updated. Checking resting DRY_RUN."
           python3 - << 'PY' > /tmp/dry-run-restored.txt
           import json, subprocess, os
           raw = subprocess.check_output([
@@ -215,42 +252,70 @@ jobs:
                   records.append(payload)
               elif text:
                   records.append({"message": text})
+          blank_ids = [
+              "57.22", "11.02", "773.05", "90.35", "990.02", "96.04",
+              "773.09", "775.01", "51.24", "10.46", "34.04",
+          ]
+          normal_ids = ["90.38", "57.78", "PD10.17", "10.22"]
+          wanted = blank_ids + normal_ids
           print(f"execution: {execution}")
           print(f"log records: {len(records)}")
+          starting = [row for row in records if row.get("message") == "VisionLink History Snapshot starting"]
           finished = [row for row in records if row.get("message") == "snapshot finished"]
-          schema = [row for row in records if str(row.get("message", "")).startswith("schema differences")]
+          utilization = [row for row in records if row.get("message") == "utilization finished"]
+          machine_rows = [row for row in records if row.get("message") == "machine utilization"]
+          jumps = [row for row in records if row.get("message") == "impossible hour-meter jump"]
           failures = [row for row in records if str(row.get("message", "")).startswith("machine snapshot failed")]
+          update_failures = [row for row in records if row.get("message") == "machine utilization update failed"]
+          writes = [row for row in machine_rows if row.get("wouldWrite") is True]
+          if starting:
+              print(f"start version: {starting[0].get('version')}")
+              print(f"start dry run: {starting[0].get('dryRun')}")
           if finished:
               row = finished[-1]
               print(f"status: {row.get('status')}")
               print(f"version: {row.get('version')}")
               print(f"source records: {row.get('sourceRecords')}")
               print(f"history created: {row.get('historyCreated')}")
+              print(f"writes performed: {row.get('writesPerformed')}")
+              print(f"would create: {row.get('wouldCreate')}")
               print(f"duplicates skipped: {row.get('duplicatesSkipped')}")
               print(f"failed count: {row.get('recordsFailed')}")
               print(f"snapshot run id: {row.get('runId')}")
               print(f"dry run: {row.get('dryRun')}")
           else:
               print("status: snapshot finished record not found")
-          print("schema differences:")
-          if schema:
-              print(json.dumps(schema[0].get("schemaDifferences"), indent=2, ensure_ascii=False))
+          if utilization:
+              row = utilization[-1]
+              print(f"utilization dry run: {row.get('dryRun')}")
+              print(f"utilization machines: {row.get('machines')}")
+              print(f"utilization updated: {row.get('updated')}")
+              print(f"utilization failed: {row.get('failed')}")
           else:
-              print("(none logged)")
-          print(f"machine failures logged: {len(failures)}")
-          for row in failures[:8]:
-              print("---")
-              for key in (
-                  "machineId",
-                  "exceptionType",
-                  "exceptionMessage",
-                  "notionStatus",
-                  "notionError",
-                  "property",
-                  "destinationDatabaseId",
-                  "runId",
-              ):
-                  print(f"{key}: {row.get(key)}")
+              print("utilization finished record not found")
+          print(f"machine utilization rows: {len(machine_rows)}")
+          print(f"wouldWrite true: {len(writes)}")
+          print(f"impossible jumps logged: {len(jumps)}")
+          print(f"utilization update failures: {len(update_failures)}")
+          by_machine = {row.get("machineId"): row for row in machine_rows}
+          jumps_by_machine = {}
+          for row in jumps:
+              jumps_by_machine.setdefault(row.get("machineId"), []).append(row)
+          for machine_id in wanted:
+              row = by_machine.get(machine_id)
+              print(f"machine {machine_id}:")
+              if row is None:
+                  print("  missing machine utilization log")
+              else:
+                  print(f"  week={row.get('hoursThisWeek')} last={row.get('hoursLastWeek')} month={row.get('hoursThisMonth')} dryRun={row.get('dryRun')} wouldWrite={row.get('wouldWrite')}")
+              for jump in jumps_by_machine.get(machine_id, []):
+                  print(
+                      "  jump "
+                      f"baseline={jump.get('baselineHours')} at {jump.get('baselineAt')} "
+                      f"ending={jump.get('endingHours')} at {jump.get('endingAt')} "
+                      f"delta={jump.get('deltaHours')} elapsed={jump.get('elapsedHours')}"
+                  )
+          print(f"machine snapshot failures logged: {len(failures)}")
           PY
 
       - name: Upload execution log
