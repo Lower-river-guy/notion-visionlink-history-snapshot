@@ -10,9 +10,12 @@ Periods are half-open and use America/Los_Angeles:
 - last week: the Monday before that, through this Monday 00:00
 - this month: the first of the month 00:00 through the next month 00:00
 
-A period is blank unless there is a reading strictly before it starts and a
-reading inside it. A meter decrease, a duplicate whose hours disagree, or a
-negative result blanks that period. Values are rounded half up to 0.1 hour.
+A period is blank unless it has a baseline and a later reading inside it.
+The baseline is a snapshot exactly at the period start when one exists, and
+otherwise the nearest reading before that start. A meter decrease, a
+duplicate whose hours disagree, a negative result, or an hour increase
+larger than the elapsed wall-clock time blanks that period. Values are
+rounded half up to 0.1 hour.
 """
 
 from __future__ import annotations
@@ -31,6 +34,9 @@ from src.notion_client import (
 from src.snapshot import SnapshotFatal, build_machine_index
 
 HOURS_TOLERANCE = 0.05
+# A meter cannot gain more hours than the wall clock between two readings.
+# One tenth of an hour covers one-decimal rounding and a few minutes of skew.
+IMPOSSIBLE_JUMP_TOLERANCE_HOURS = 0.1
 Logger = Callable[..., None]
 
 
@@ -62,10 +68,23 @@ class Reading:
 
 
 @dataclass(frozen=True)
+class MeterJump:
+    """An hour-meter increase that is faster than elapsed wall-clock time."""
+
+    baseline_hours: float
+    baseline_at: datetime
+    ending_hours: float
+    ending_at: datetime
+    delta: float
+    elapsed_hours: float
+
+
+@dataclass(frozen=True)
 class NormalizedHistory:
     readings: tuple[Reading, ...]
     duplicate_conflicts: tuple[datetime, ...]
     resets: tuple[datetime, ...]
+    impossible_jumps: tuple[MeterJump, ...]
     out_of_order: bool
     ignored_future: int
     dropped_incomplete: int
@@ -175,13 +194,18 @@ def normalize_history(
     prepared.sort(key=lambda item: (item.timestamp, item.page_id or ""))
     kept, conflicts = _collapse_duplicates(prepared)
     resets: list[datetime] = []
+    jumps: list[MeterJump] = []
     for previous, current in zip(kept, kept[1:]):
         if current.hours < previous.hours - HOURS_TOLERANCE:
             resets.append(current.timestamp)
+        jump = _impossible_jump(previous, current)
+        if jump is not None:
+            jumps.append(jump)
     return NormalizedHistory(
         readings=tuple(kept),
         duplicate_conflicts=tuple(conflicts),
         resets=tuple(resets),
+        impossible_jumps=tuple(jumps),
         out_of_order=out_of_order,
         ignored_future=ignored_future,
         dropped_incomplete=dropped,
@@ -193,26 +217,29 @@ def calculate_period_hours(
     start: datetime,
     end: datetime,
 ) -> float | None:
-    """Later meter minus earlier meter for [start, end). Blank when unusable."""
+    """Later meter minus earlier meter for [start, end). Blank when unusable.
 
-    baseline: Reading | None = None
-    end_reading: Reading | None = None
-    for reading in history.readings:
-        if reading.timestamp < start:
-            baseline = reading
-        elif reading.timestamp < end:
-            end_reading = reading
-    if baseline is None or end_reading is None:
+    The baseline is the reading exactly at `start` when one exists. Otherwise
+    it is the latest reading strictly before `start`.
+    """
+
+    span = _period_span(history, start, end)
+    if span is None:
         return None
-    if end_reading.timestamp <= baseline.timestamp:
-        return None
+    baseline, end_reading = span
     for conflict_at in history.duplicate_conflicts:
         if baseline.timestamp <= conflict_at <= end_reading.timestamp:
             return None
     for reset_at in history.resets:
         if baseline.timestamp < reset_at <= end_reading.timestamp:
             return None
+    for jump in history.impossible_jumps:
+        if baseline.timestamp < jump.ending_at <= end_reading.timestamp:
+            return None
     delta = end_reading.hours - baseline.hours
+    elapsed = (end_reading.timestamp - baseline.timestamp).total_seconds() / 3600
+    if delta > elapsed + IMPOSSIBLE_JUMP_TOLERANCE_HOURS:
+        return None
     if delta < -HOURS_TOLERANCE:
         return None
     if delta < 0:
@@ -227,9 +254,12 @@ def calculate_machine_utilization(
     *,
     page_id: str | None = None,
     timezone_name: str = "America/Los_Angeles",
+    logger: Logger | None = None,
 ) -> MachineUtilization:
     boundaries = get_period_boundaries(now, timezone_name)
     history = normalize_history(readings, now=now, timezone_name=timezone_name)
+    if logger is not None:
+        _log_impossible_jumps(logger, machine_id, history, boundaries)
     return MachineUtilization(
         machine_id=machine_id,
         page_id=page_id,
@@ -340,6 +370,7 @@ def run_utilization(
             now,
             page_id=page_id,
             timezone_name=config.business_timezone,
+            logger=logger,
         )
         if len(sample) < 8 and _has_value(utilization):
             sample.append(_sample_row(utilization))
@@ -423,6 +454,80 @@ def reading_from_history_page(
         snapshot_run_id=_plain_text(properties.get("Snapshot Run ID")),
         page_id=str(page.get("id") or "") or None,
     )
+
+
+def _period_span(
+    history: NormalizedHistory,
+    start: datetime,
+    end: datetime,
+) -> tuple[Reading, Reading] | None:
+    """Baseline at the boundary, else the latest reading before it, plus a later reading."""
+
+    on_boundary: Reading | None = None
+    before: Reading | None = None
+    end_reading: Reading | None = None
+    for reading in history.readings:
+        if reading.timestamp == start:
+            on_boundary = reading
+        elif reading.timestamp < start:
+            before = reading
+        elif reading.timestamp < end:
+            end_reading = reading
+    baseline = on_boundary if on_boundary is not None else before
+    if baseline is None or end_reading is None:
+        return None
+    if end_reading.timestamp <= baseline.timestamp:
+        return None
+    return baseline, end_reading
+
+
+def _impossible_jump(previous: Reading, current: Reading) -> MeterJump | None:
+    elapsed = (current.timestamp - previous.timestamp).total_seconds() / 3600
+    delta = current.hours - previous.hours
+    if delta <= elapsed + IMPOSSIBLE_JUMP_TOLERANCE_HOURS:
+        return None
+    return MeterJump(
+        baseline_hours=previous.hours,
+        baseline_at=previous.timestamp,
+        ending_hours=current.hours,
+        ending_at=current.timestamp,
+        delta=delta,
+        elapsed_hours=elapsed,
+    )
+
+
+def _log_impossible_jumps(
+    logger: Logger,
+    machine_id: str,
+    history: NormalizedHistory,
+    boundaries: PeriodBoundaries,
+) -> None:
+    windows = (boundaries.this_week, boundaries.last_week, boundaries.this_month)
+    logged: set[datetime] = set()
+    for jump in history.impossible_jumps:
+        affects = False
+        for window in windows:
+            span = _period_span(history, window.start, window.end)
+            if span is None:
+                continue
+            baseline, end_reading = span
+            if baseline.timestamp < jump.ending_at <= end_reading.timestamp:
+                affects = True
+                break
+        if not affects or jump.ending_at in logged:
+            continue
+        logged.add(jump.ending_at)
+        logger(
+            "WARNING",
+            "impossible hour-meter jump",
+            machineId=machine_id,
+            baselineHours=jump.baseline_hours,
+            baselineAt=jump.baseline_at.isoformat(timespec="seconds"),
+            endingHours=jump.ending_hours,
+            endingAt=jump.ending_at.isoformat(timespec="seconds"),
+            deltaHours=round(jump.delta, 3),
+            elapsedHours=round(jump.elapsed_hours, 3),
+        )
 
 
 def _collapse_duplicates(readings: list[Reading]) -> tuple[list[Reading], list[datetime]]:

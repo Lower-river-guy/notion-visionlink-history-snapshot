@@ -6,8 +6,9 @@ Monday 00:00; one reading; no reading before the period; no reading inside
 the period; a normal later-minus-earlier delta; a zero delta; half-up
 rounding to 0.1; duplicate timestamps with the same hours; duplicate
 timestamps or snapshot run ids whose hours disagree; unsorted input; a meter
-decrease; a negative result; a reading after now; a date-only snapshot; and
-dry-run skipping the Machines write.
+decrease; a negative result; an impossible positive jump faster than
+wall-clock time; a snapshot exactly on Monday 00:00 or the 1st at 00:00; a
+reading after now; a date-only snapshot; and dry-run skipping the Machines write.
 """
 
 from __future__ import annotations
@@ -73,16 +74,109 @@ def test_period_boundaries_use_monday_and_calendar_month_in_los_angeles():
     assert fall.this_month.end.utcoffset().total_seconds() == -8 * 3600
 
 
-def test_monday_midnight_starts_the_new_week():
+def test_exact_week_and_month_boundary_readings_are_baselines():
     now = _at(2026, 10, 2, 10)
+    # Monday 00:00 is the this-week baseline even though Sunday is closer in the past.
+    with_monday = calculate_machine_utilization(
+        "90.35",
+        [
+            _reading(_at(2026, 9, 20, 10), 80),
+            _reading(_at(2026, 9, 27, 10), 90),
+            _reading(_at(2026, 9, 28, 0), 100),
+            _reading(_at(2026, 10, 1, 10), 112),
+        ],
+        now,
+    )
+    assert with_monday.hours_this_week == 12.0
+    assert with_monday.hours_last_week == 10.0
+
+    # No snapshot on the Monday boundary, so Sunday is the baseline.
+    before_monday = calculate_machine_utilization(
+        "90.35",
+        [
+            _reading(_at(2026, 9, 20, 10), 80),
+            _reading(_at(2026, 9, 27, 10), 90),
+            _reading(_at(2026, 10, 1, 10), 112),
+        ],
+        now,
+    )
+    assert before_monday.hours_this_week == 22.0
+
+    # October 1 00:00 is the this-month baseline, not the September 30 reading.
+    with_month = calculate_machine_utilization(
+        "90.35",
+        [
+            _reading(_at(2026, 9, 24, 10), 50),
+            _reading(_at(2026, 9, 30, 10), 70),
+            _reading(_at(2026, 10, 1, 0), 80),
+            _reading(_at(2026, 10, 2, 9), 95),
+        ],
+        now,
+    )
+    assert with_month.hours_this_month == 15.0
+
+    before_month = calculate_machine_utilization(
+        "90.35",
+        [
+            _reading(_at(2026, 9, 24, 10), 50),
+            _reading(_at(2026, 9, 30, 10), 70),
+            _reading(_at(2026, 10, 2, 9), 95),
+        ],
+        now,
+    )
+    assert before_month.hours_this_month == 25.0
+
+
+def test_impossible_positive_jump_is_blank_and_logged():
+    now = _at(2026, 10, 2, 10)
+    # 57.22's live shape: about 25510 hours gained in well under that many wall-clock hours.
     readings = [
-        _reading(_at(2026, 9, 27, 10), 100),  # last week
-        _reading(_at(2026, 9, 20, 10), 90),  # before last week
-        _reading(_at(2026, 9, 28, 0), 110),  # Monday 00:00, this week
+        _reading(_at(2026, 9, 24, 0), 35041.186944),
+        _reading(_at(2026, 9, 30, 0), 35062.467222),
+        _reading(datetime(2026, 10, 1, 17, 0, tzinfo=ZoneInfo("UTC")), 60551.423333),
     ]
-    result = calculate_machine_utilization("90.35", readings, now)
-    assert result.hours_last_week == 10.0
-    assert result.hours_this_week == 10.0
+    logged = []
+
+    def logger(severity, message, **fields):
+        logged.append((severity, message, fields))
+
+    result = calculate_machine_utilization("57.22", readings, now, logger=logger)
+    assert result.hours_this_week is None
+    assert result.hours_this_month is None
+    assert result.hours_last_week is None
+    anomalies = [fields for severity, message, fields in logged if message == "impossible hour-meter jump"]
+    assert len(anomalies) == 1
+    anomaly = anomalies[0]
+    assert anomaly["machineId"] == "57.22"
+    assert anomaly["baselineHours"] == 35062.467222
+    assert anomaly["endingHours"] == 60551.423333
+    assert anomaly["deltaHours"] > 25000
+    assert anomaly["elapsedHours"] < 48
+    assert anomaly["deltaHours"] > anomaly["elapsedHours"]
+
+    # 24 wall-clock hours may gain 24 hours. 25 hours in that same span is impossible.
+    allowed = calculate_machine_utilization(
+        "90.35",
+        [
+            _reading(_at(2026, 9, 20, 10), 90),
+            _reading(_at(2026, 9, 30, 10), 100),
+            _reading(_at(2026, 10, 1, 10), 124),
+        ],
+        now,
+    )
+    assert allowed.hours_this_month == 24.0
+    assert allowed.hours_this_week == 34.0
+    rejected = calculate_machine_utilization(
+        "90.35",
+        [
+            _reading(_at(2026, 9, 20, 10), 90),
+            _reading(_at(2026, 9, 30, 10), 100),
+            _reading(_at(2026, 10, 1, 10), 125),
+        ],
+        now,
+    )
+    assert rejected.hours_this_week is None
+    assert rejected.hours_this_month is None
 
 
 def test_blank_when_one_reading_or_period_is_not_bracketed():

@@ -41,10 +41,14 @@ History**, not sums of the readings and not Notion formulas. Periods use
 - **Hours Last Week**: the previous Monday 00:00 through this Monday 00:00
 - **Hours This Month**: the first of the month 00:00 through the next month 00:00
 
-Each value is the latest meter inside the period minus the latest meter
-strictly before the period starts. It is blank when either reading is
-missing, when two rows that share a timestamp or Snapshot Run ID disagree,
-or when the meter decreases between those readings. A zero delta is written
+Each value is the latest meter inside the period minus the baseline meter.
+The baseline is a snapshot exactly at the period start (Monday 00:00, or
+the 1st at 00:00) when one exists, and otherwise the nearest reading before
+that start. It is blank when either reading is missing, when two rows that
+share a timestamp or Snapshot Run ID disagree, when the meter decreases,
+or when the meter gains more hours than the wall-clock time between the
+readings (plus 0.1 hour). That last case is logged with the machine id,
+both readings, the delta, and the elapsed hours. A zero delta is written
 as `0`. Results are rounded half up to one decimal place.
 
 `DRY_RUN=true` still calculates the values and logs a sample. It does not
