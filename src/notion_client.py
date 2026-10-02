@@ -1,8 +1,10 @@
-"""Read-only Notion access plus append-only page creates in the history database.
+"""Notion access for the history snapshot and Machines hour deltas.
 
-This client has no update, archive, or delete methods. The only relation write
-allowed is the history property "Machine" on Cat VisionLink History. The source
-database id is refused as a write parent.
+Page creates are append-only in Cat VisionLink History. The only relation
+write is the history property "Machine". The only page update is the three
+Machines number properties Hours This Week, Hours Last Week, and Hours This
+Month. There is no archive or delete method. The source database id is
+refused as a write parent.
 """
 
 from __future__ import annotations
@@ -18,6 +20,11 @@ _SECRET_RE = re.compile(r"(?i)(bearer\s+)\S+|((?:secret_|ntn_)[A-Za-z0-9_\-]+)")
 _MAX_PAGES = 10_000
 HISTORY_DATABASE_ID = "0357c6bd-2650-4dfc-affb-72430beaca84"
 ALLOWED_RELATION_PROPERTY = "Machine"
+MACHINE_NUMBER_PROPERTIES = (
+    "Hours This Week",
+    "Hours Last Week",
+    "Hours This Month",
+)
 
 
 class NotionError(Exception):
@@ -227,6 +234,38 @@ class NotionClient:
             "/v1/pages",
             {"parent": {"database_id": database_id}, "properties": properties},
             database_id=database_id,
+        )
+
+    def update_machine_numbers(self, page_id: str, properties: dict[str, Any]) -> dict[str, Any]:
+        """Patch one Machines page. Only the three utilization numbers are allowed."""
+
+        page_id = normalize_notion_id(page_id)
+        if not page_id:
+            raise NotionError("Refusing to update a Machines page without an id")
+        if set(properties) != set(MACHINE_NUMBER_PROPERTIES):
+            raise NotionError(
+                "Machines utilization update must set only "
+                + ", ".join(MACHINE_NUMBER_PROPERTIES)
+            )
+        payload: dict[str, Any] = {}
+        for name in MACHINE_NUMBER_PROPERTIES:
+            value = properties[name]
+            if not isinstance(value, dict) or set(value) != {"number"}:
+                raise NotionError(f"Refusing to write {name!r} with a non-number payload")
+            number = value["number"]
+            if number is not None and (
+                isinstance(number, bool) or not isinstance(number, (int, float))
+            ):
+                raise NotionError(f"Refusing to write {name!r}: value is not a number")
+            if isinstance(number, float) and (
+                number != number or number in (float("inf"), float("-inf"))
+            ):
+                raise NotionError(f"Refusing to write {name!r}: value is not finite")
+            payload[name] = {"number": None if number is None else float(number)}
+        return self._request(
+            "PATCH",
+            f"/v1/pages/{page_id}",
+            {"properties": payload},
         )
 
     def _request(

@@ -16,6 +16,7 @@ class FakeNotion:
         self.fail_creates_for = set(fail_creates_for)
         self.created = []
         self.write_calls = 0
+        self.machine_updates = []
 
     def retrieve_database(self, database_id):
         if database_id == self.source["id"]:
@@ -57,6 +58,10 @@ class FakeNotion:
         self.pages[database_id].append(page)
         self.created.append((database_id, properties))
         return page
+
+    def update_machine_numbers(self, page_id, properties):
+        self.machine_updates.append((page_id, properties))
+        return {"id": page_id, "properties": properties}
 
 
 def _title_value(properties):

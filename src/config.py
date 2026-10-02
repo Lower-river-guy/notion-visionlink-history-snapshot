@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
-VERSION = "0.01.03"
+VERSION = "0.01.04"
 
 SOURCE_DATABASE_ID_DEFAULT = "3db284de-cb43-80ed-9b6f-fc20d6cc20eb"
 # Database id for GET/POST /v1/databases/{id}. The Machines data source id
